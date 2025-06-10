@@ -1,3 +1,5 @@
+# File: ventaxia_ha/config_flow.py
+
 """Config flow for VentAxia IoT integration."""
 from __future__ import annotations
 

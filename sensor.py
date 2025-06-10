@@ -1,3 +1,5 @@
+# File: ventaxia_ha/sensor.py
+
 """Sensor platform for VentAxia IoT integration."""
 from __future__ import annotations
 

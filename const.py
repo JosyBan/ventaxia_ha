@@ -1,6 +1,8 @@
+# File: ventaxia_ha/const.py
+
 """Constants for the VentAxia IoT integration."""
 
-DOMAIN = "ventaxia_iot"
+DOMAIN = "ventaxia_ha"
 
 # Configuration keys
 CONF_HOST = "host"

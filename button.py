@@ -1,3 +1,5 @@
+# File: ventaxia_ha/button.py
+
 """Button platform for VentAxia IoT integration."""
 from __future__ import annotations
 

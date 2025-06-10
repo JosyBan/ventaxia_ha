@@ -4,10 +4,10 @@
   "codeowners": ["@yourusername"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/yourusername/ha-ventaxia-iot",
+  "documentation": "https://github.com/yourusername/ventaxia_ha",
   "integration_type": "device",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/yourusername/ha-ventaxia-iot/issues",
+  "issue_tracker": "https://github.com/yourusername/ventaxia_ha/issues",
   "requirements": ["ventaxiaiot>=1.0.0"],
   "version": "1.0.0"
 }
