@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Optional
+from typing import  Callable
 
 import voluptuous as vol
 
@@ -14,16 +14,16 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers import config_validation as cv
+
 
 from ventaxiaiot import AsyncNativePskClient, VentMessageProcessor, VentClientCommands, PendingRequestTracker
 
 from .const import (
-    DOMAIN, 
-    CONF_HOST, 
-    CONF_PORT, 
-    CONF_IDENTITY, 
-    CONF_PSK_KEY, 
+    DOMAIN,
+    CONF_HOST,
+    CONF_PORT,
+    CONF_IDENTITY,
+    CONF_PSK_KEY,
     CONF_WIFI_DEVICE_ID,
     SERVICE_SET_AIRFLOW_MODE,
     AIRFLOW_MODES,
@@ -50,7 +50,7 @@ class VentAxiaCoordinator:
         self.hass = hass
         self.entry = entry
         self.data = entry.data
-        
+
         # Initialize connection components
         self.pending_tracker = PendingRequestTracker()
         self.client = AsyncNativePskClient(
@@ -62,7 +62,7 @@ class VentAxiaCoordinator:
         )
         self.processor = VentMessageProcessor(self.pending_tracker)
         self.commands = VentClientCommands(self.client.wifi_device_id, self.pending_tracker)
-        
+
         self.device = self.processor.device
         self._receive_task: asyncio.Task | None = None
         self._callbacks: list[Callable[[], None]] = []

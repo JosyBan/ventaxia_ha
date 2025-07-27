@@ -4,7 +4,7 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
-from custom_components.ventaxia_ha.const import DOMAIN
+
 
 @pytest.mark.asyncio
 async def test_sensor_entities(hass: HomeAssistant, setup_integration):

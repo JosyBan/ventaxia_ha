@@ -2,7 +2,6 @@
 
 """Sensor platform for VentAxia IoT integration."""
 from __future__ import annotations
-from functools import cached_property
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -27,10 +26,10 @@ async def async_setup_entry(
 ) -> None:
     """Set up VentAxia sensors from a config entry."""
     coordinator: VentAxiaCoordinator = hass.data[DOMAIN][config_entry.entry_id]
-    
+
     entities = [
         VentAxiaSupplyRpmSensor(coordinator),
-        VentAxiaExhaustRpmSensor(coordinator), 
+        VentAxiaExhaustRpmSensor(coordinator),
         VentAxiaUserAirflowModeSensor(coordinator),
         VentAxiaPowerSensor(coordinator),
         VentAxiaIndoorTempSensor(coordinator),
@@ -41,7 +40,7 @@ async def async_setup_entry(
         VentAxiaExternalHumiditySensor(coordinator),
         VentAxiaInternalHumiditySensor(coordinator),
     ]
-    
+
     async_add_entities(entities)
 
 
@@ -53,7 +52,7 @@ class VentAxiaBaseSensor(SensorEntity):
         self._coordinator = coordinator
         self._sensor_type = sensor_type
         self._attr_unique_id = f"{coordinator.data['wifi_device_id']}_{sensor_type}"
-        
+
     @property
     def device_info(self) -> DeviceInfo | None:
         """Return device information."""
@@ -194,9 +193,9 @@ class VentAxiaSupplyTempSensor(VentAxiaBaseSensor):
 
     @property
     def native_value(self) -> float | None:
-        """Return the state of the sensor."""   
-        
-        
+        """Return the state of the sensor."""
+
+
         return round(const.EXTRACT_WEIGHT * self._coordinator.device.extract_temp_c + (1 - const.EXTRACT_WEIGHT) * self._coordinator.device.extract_temp_c, 2)
 
 class VentAxiaSupplyAirflowSensor(VentAxiaBaseSensor):
@@ -231,7 +230,7 @@ class VentAxiaExhaustAirflowSensor(VentAxiaBaseSensor):
     def native_value(self) -> int | None:
         """Return the state of the sensor."""
         return self._coordinator.device.cm_af_exh
-    
+
 class VentAxiaExternalHumiditySensor(VentAxiaBaseSensor):
     """External Humidity sensor."""
 

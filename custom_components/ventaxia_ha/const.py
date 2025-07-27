@@ -6,7 +6,7 @@ DOMAIN = "ventaxia_ha"
 
 # Configuration keys
 CONF_HOST = "host"
-CONF_PORT = "port" 
+CONF_PORT = "port"
 CONF_IDENTITY = "identity"
 CONF_PSK_KEY = "psk_key"
 CONF_WIFI_DEVICE_ID = "wifi_device_id"
@@ -17,7 +17,7 @@ DEFAULT_PORT = 47819
 # Airflow modes
 AIRFLOW_MODES = {
     "reset": 0,
-    "normal": 2, 
+    "normal": 2,
     "boost": 3,
     "purge": 4,
 }

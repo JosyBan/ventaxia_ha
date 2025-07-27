@@ -84,4 +84,3 @@ jobs:
             -n auto \
             -p no:sugar \
             tests
-

@@ -24,14 +24,14 @@ async def async_setup_entry(
 ) -> None:
     """Set up VentAxia buttons from a config entry."""
     coordinator: VentAxiaCoordinator = hass.data[DOMAIN][config_entry.entry_id]
-    
+
     entities = [
         VentAxiaResetModeButton(coordinator),
         VentAxiaNormalModeButton(coordinator),
         VentAxiaBoostModeButton(coordinator),
         VentAxiaPurgeModeButton(coordinator),
     ]
-    
+
     async_add_entities(entities)
 
 

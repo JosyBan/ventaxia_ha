@@ -3,14 +3,12 @@
 [![GitHub Release][releases-shield]][releases]
 [![License][license-shield]](LICENSE)
 
-
 [![Project Maintenance][maintenance-shield]][user_profile]
-
 
 [![Discord][discord-shield]][discord]
 [![Community Forum][forum-shield]][forum]
 
-This custom component integrates Vent Axia Sentinel Kinetic Advance S MVHR (mechanical ventilation with heat recovery) System with the Wifi module with [Home Assistant][HA], allowing you to monitor various parameters from your device.
+This custom component integrates Vent Axia Sentinel Kinetic Advance S MVHR (mechanical ventilation with heat recovery) System with the Wifi module with [Home Assistant][ha], allowing you to monitor various parameters from your device.
 
 # Supported Devices
 
@@ -18,13 +16,11 @@ This integration relies on the [ventaxiaiot python library](https://github.com/J
 
     Vent Axia Sentinel Kinetic Advance S
 
-
 **This component will set up the following platforms.**
 
-| Platform | Description                                         |
-| -------- | --------------------------------------------------- |
-| `sensor` | Provides various readings for your Ventaxia device  |
-
+| Platform | Description                                        |
+| -------- | -------------------------------------------------- |
+| `sensor` | Provides various readings for your Ventaxia device |
 
 ![example][logo]
 
@@ -32,7 +28,7 @@ This integration relies on the [ventaxiaiot python library](https://github.com/J
 
 This is the recommended way to install.
 
-1. Open [HACS][HACS] in your Home Assistant UI 
+1. Open [HACS][hacs] in your Home Assistant UI
 2. Click on the three dots in the top right corner and select Custom repositories.
 3. In the "Add custom repository" field, paste https://github.com/JosyBan/ventaxia_ha.
 4. Select Integration as the Category.
@@ -45,14 +41,12 @@ This is the recommended way to install.
 
 ## Manual Installation
 
-1. Download the integration:  Download the latest release from the [Release Page][ventaxia-releases].
+1. Download the integration: Download the latest release from the [Release Page][ventaxia-releases].
 2. Unpack the ventaxia_ha folder from the downloaded archive.
 3. Copy the entire ventaxia_ha folder into your Home Assistant's custom_components directory. If this directory doesn't exist, you'll need to create it.
 4. Your Home Assistant configuration directory typically resides at /config (e.g., /config/custom_components/ventaxia_ha/).
 5. Restart Home Assistant.
-7. In the HA UI, click Settings in the left nav bar, then click "Devices & Services". By default you should be viewing the Integrations tab. Click "+ Add Integration" button at bottom right and then search for "ventaxia".
-
-
+6. In the HA UI, click Settings in the left nav bar, then click "Devices & Services". By default you should be viewing the Integrations tab. Click "+ Add Integration" button at bottom right and then search for "ventaxia".
 
 ## Configuration
 
@@ -116,7 +110,7 @@ And it was heavely inspired by [@CJNE](https://github.com/CJNE)'s [ha-myenergi] 
 [ventaxia_ha]: https://github.com/JosyBan/ventaxia_ha
 [ventaxia-releases]: https://github.com/JosyBan/ventaxia_ha/releases
 [commits]: https://github.com/JosyBan/ventaxia_ha/commits/main/
-[HA]: https://home-assistant.io
+[ha]: https://home-assistant.io
 [hacs]: https://hacs.xyz
 [hacsbadge]: https://img.shields.io/badge/HACS-Default-41BDF5.svg?style=for-the-badge
 [discord]: https://discord.gg/Qa5fW2R
