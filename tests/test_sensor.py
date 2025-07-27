@@ -5,7 +5,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
 
-
 @pytest.mark.asyncio
 async def test_sensor_entities(hass: HomeAssistant, setup_integration):
     """Test that sensor entities are created."""

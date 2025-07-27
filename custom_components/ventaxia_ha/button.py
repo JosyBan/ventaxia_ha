@@ -1,5 +1,4 @@
 # File: ventaxia_ha/button.py
-
 """Button platform for VentAxia IoT integration."""
 from __future__ import annotations
 
@@ -8,8 +7,8 @@ import logging
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import VentAxiaCoordinator
 from .const import DOMAIN
@@ -38,7 +37,9 @@ async def async_setup_entry(
 class VentAxiaBaseButton(ButtonEntity):
     """Base class for VentAxia buttons."""
 
-    def __init__(self, coordinator: VentAxiaCoordinator, button_type: str, name: str) -> None:
+    def __init__(
+        self, coordinator: VentAxiaCoordinator, button_type: str, name: str
+    ) -> None:
         """Initialize the button."""
         self._coordinator = coordinator
         self._button_type = button_type

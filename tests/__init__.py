@@ -4,6 +4,7 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
+
 @pytest.fixture
 async def setup_integration(hass: HomeAssistant):
     """Fixture to set up the integration in HA."""

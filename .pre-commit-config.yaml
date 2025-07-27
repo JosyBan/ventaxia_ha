@@ -6,27 +6,34 @@ repos:
       - id: check-yaml
       - id: end-of-file-fixer
       - id: trailing-whitespace
-  - repo: local
+
+    # Run isort first to handle imports
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.13.2 # Use the latest stable version (check PyPI for current)
+    hooks:
+      - id: isort
+        name: isort (Python imports) # More descriptive name
+        args: ["--profile", "black"] # <--- Configure isort to be black-compatible
+        # Note: If your custom_components directory is where imports need to be recognized,
+        # you might need to adjust the isort config in pyproject.toml or .isort.cfg
+        # rather than using --application-directories here, especially if it's a non-standard source root.
+        # However, for pre-commit, the profile should often be enough.
+    # Then run black
+
+  - repo: https://github.com/psf/black
+    rev: 24.4.2 # Use the latest stable version of black (check PyPI for current)
     hooks:
       - id: black
-        name: black
-        entry: black
-        language: system
-        types: [python]
-        require_serial: true
+        name: black (Python formatter) # More descriptive name
+
+  # Then run flake8 for linting
+  - repo: https://github.com/PyCQA/flake8
+    rev: 7.1.0 # Use the latest stable version of flake8 (check PyPI for current)
+    hooks:
       - id: flake8
-        name: flake8
-        entry: flake8
-        language: system
-        types: [python]
-        require_serial: true
-      - id: reorder-python-imports
-        name: Reorder python imports
-        entry: reorder-python-imports
-        language: system
-        types: [python]
-        args: [--application-directories=custom_components]
+        name: flake8 (Python linter) # More descriptive name
+
   - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v2.2.1
+    rev: v3.1.0 # Updated to a more recent stable version
     hooks:
       - id: prettier

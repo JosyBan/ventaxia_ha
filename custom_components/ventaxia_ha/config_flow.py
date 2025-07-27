@@ -1,5 +1,4 @@
 # File: ventaxia_ha/config_flow.py
-
 """Config flow for VentAxia IoT integration."""
 from __future__ import annotations
 
@@ -8,16 +7,20 @@ import ssl
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.config_entries import ConfigFlowResult
-
 from ventaxiaiot import AsyncNativePskClient
 
-from .const import DOMAIN, CONF_IDENTITY, CONF_PSK_KEY, CONF_WIFI_DEVICE_ID, DEFAULT_PORT
+from .const import (
+    CONF_IDENTITY,
+    CONF_PSK_KEY,
+    CONF_WIFI_DEVICE_ID,
+    DEFAULT_PORT,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,7 +42,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
         identity=data[CONF_IDENTITY],
         psk_key=data[CONF_PSK_KEY],
         host=data[CONF_HOST],
-        port=data[CONF_PORT]
+        port=data[CONF_PORT],
     )
 
     try:
@@ -47,15 +50,15 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
         await client.close()
     except ssl.SSLError as err:
         if "application data after close notify" in str(err):
-            _LOGGER.error("Non-critical SSL shutdown error (device misbehavior): %s", err)
+            _LOGGER.error(
+                "Non-critical SSL shutdown error (device misbehavior): %s", err
+            )
         else:
             _LOGGER.error("Cannot connect to VentAxia device: %s", err)
             raise CannotConnect from err
     except Exception as err:
         _LOGGER.error("Cannot connect to VentAxia device: %s", err)
         raise
-
-
 
     return {"title": f"VentAxia Device ({data[CONF_HOST]})"}
 
@@ -65,10 +68,9 @@ class VentAxiaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-
-
-
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
 

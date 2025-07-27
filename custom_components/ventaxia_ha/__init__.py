@@ -1,33 +1,34 @@
 # File: ventaxia_ha/__init__.py
-
 """The VentAxia IoT integration."""
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import  Callable
+from typing import Callable
 
 import voluptuous as vol
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.device_registry import DeviceInfo
-
-
-from ventaxiaiot import AsyncNativePskClient, VentMessageProcessor, VentClientCommands, PendingRequestTracker
+from ventaxiaiot import (
+    AsyncNativePskClient,
+    PendingRequestTracker,
+    VentClientCommands,
+    VentMessageProcessor,
+)
 
 from .const import (
-    DOMAIN,
+    AIRFLOW_MODES,
     CONF_HOST,
-    CONF_PORT,
     CONF_IDENTITY,
+    CONF_PORT,
     CONF_PSK_KEY,
     CONF_WIFI_DEVICE_ID,
+    DOMAIN,
     SERVICE_SET_AIRFLOW_MODE,
-    AIRFLOW_MODES,
-    VALID_DURATIONS
+    VALID_DURATIONS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -58,10 +59,12 @@ class VentAxiaCoordinator:
             identity=self.data[CONF_IDENTITY],
             psk_key=self.data[CONF_PSK_KEY],
             host=self.data[CONF_HOST],
-            port=self.data[CONF_PORT]
+            port=self.data[CONF_PORT],
         )
         self.processor = VentMessageProcessor(self.pending_tracker)
-        self.commands = VentClientCommands(self.client.wifi_device_id, self.pending_tracker)
+        self.commands = VentClientCommands(
+            self.client.wifi_device_id, self.pending_tracker
+        )
 
         self.device = self.processor.device
         self._receive_task: asyncio.Task | None = None
@@ -78,10 +81,9 @@ class VentAxiaCoordinator:
             manufacturer="VentAxia",
         )
 
-
     async def async_send_airflow_mode(self, mode: str, duration: int) -> None:
         """Send airflow mode command to the device."""
-        await self.commands.send_airflow_mode_request(self.client,mode, duration)
+        await self.commands.send_airflow_mode_request(self.client, mode, duration)
 
     async def async_start(self) -> None:
         """Start the message receive loop."""

@@ -1,5 +1,4 @@
 # File: ventaxia_ha/const.py
-
 """Constants for the VentAxia IoT integration."""
 
 DOMAIN = "ventaxia_ha"

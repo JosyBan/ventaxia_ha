@@ -1,5 +1,4 @@
 # File: ventaxia_ha/sensor.py
-
 """Sensor platform for VentAxia IoT integration."""
 from __future__ import annotations
 
@@ -9,14 +8,21 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, REVOLUTIONS_PER_MINUTE, UnitOfTemperature, UnitOfPower, UnitOfVolumeFlowRate
+from homeassistant.const import (
+    PERCENTAGE,
+    REVOLUTIONS_PER_MINUTE,
+    UnitOfPower,
+    UnitOfTemperature,
+    UnitOfVolumeFlowRate,
+)
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from custom_components.ventaxia_ha import const
 
 from . import VentAxiaCoordinator
 from .const import DOMAIN
-from custom_components.ventaxia_ha import const
 
 
 async def async_setup_entry(
@@ -195,8 +201,12 @@ class VentAxiaSupplyTempSensor(VentAxiaBaseSensor):
     def native_value(self) -> float | None:
         """Return the state of the sensor."""
 
+        return round(
+            const.EXTRACT_WEIGHT * self._coordinator.device.extract_temp_c
+            + (1 - const.EXTRACT_WEIGHT) * self._coordinator.device.extract_temp_c,
+            2,
+        )
 
-        return round(const.EXTRACT_WEIGHT * self._coordinator.device.extract_temp_c + (1 - const.EXTRACT_WEIGHT) * self._coordinator.device.extract_temp_c, 2)
 
 class VentAxiaSupplyAirflowSensor(VentAxiaBaseSensor):
     """Supply airflow sensor."""
@@ -231,6 +241,7 @@ class VentAxiaExhaustAirflowSensor(VentAxiaBaseSensor):
         """Return the state of the sensor."""
         return self._coordinator.device.cm_af_exh
 
+
 class VentAxiaExternalHumiditySensor(VentAxiaBaseSensor):
     """External Humidity sensor."""
 
@@ -247,6 +258,7 @@ class VentAxiaExternalHumiditySensor(VentAxiaBaseSensor):
     def native_value(self) -> int | None:
         """Return the state of the sensor."""
         return self._coordinator.device.exr_rh
+
 
 class VentAxiaInternalHumiditySensor(VentAxiaBaseSensor):
     """Internal Humidity sensor."""
