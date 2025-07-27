@@ -9,7 +9,7 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 
 from . import VentAxiaCoordinator
 from .const import DOMAIN
@@ -46,7 +46,7 @@ class VentAxiaBaseButton(ButtonEntity):
         self._attr_name = name
 
     @property
-    def device_info(self) -> DeviceInfo:
+    def device_info(self) -> DeviceInfo | None:
         """Return device information."""
         return self._coordinator.device_info
 

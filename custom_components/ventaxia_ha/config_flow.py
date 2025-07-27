@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import ssl
 from typing import Any
 
 import voluptuous as vol
@@ -13,6 +14,7 @@ from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.config_entries import ConfigFlowResult
 
 from ventaxiaiot import AsyncNativePskClient
 
@@ -44,21 +46,30 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     try:
         await client.connect(timeout=10.0)
         await client.close()
+    except ssl.SSLError as err:
+        if "application data after close notify" in str(err):
+            _LOGGER.error("Non-critical SSL shutdown error (device misbehavior): %s", err)
+        else:
+            _LOGGER.error("Cannot connect to VentAxia device: %s", err)
+            raise CannotConnect from err
     except Exception as err:
         _LOGGER.error("Cannot connect to VentAxia device: %s", err)
-        raise CannotConnect from err
+        raise
+
+
 
     return {"title": f"VentAxia Device ({data[CONF_HOST]})"}
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class VentAxiaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for VentAxia IoT."""
 
     VERSION = 1
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+
+
+    
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
         

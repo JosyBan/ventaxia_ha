@@ -2,6 +2,7 @@
 
 """Sensor platform for VentAxia IoT integration."""
 from __future__ import annotations
+from functools import cached_property
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -9,13 +10,14 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, REVOLUTIONS_PER_MINUTE, UnitOfTemperature
+from homeassistant.const import PERCENTAGE, REVOLUTIONS_PER_MINUTE, UnitOfTemperature, UnitOfPower, UnitOfVolumeFlowRate
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 
 from . import VentAxiaCoordinator
 from .const import DOMAIN
+from custom_components.ventaxia_ha import const
 
 
 async def async_setup_entry(
@@ -36,6 +38,8 @@ async def async_setup_entry(
         VentAxiaSupplyTempSensor(coordinator),
         VentAxiaSupplyAirflowSensor(coordinator),
         VentAxiaExhaustAirflowSensor(coordinator),
+        VentAxiaExternalHumiditySensor(coordinator),
+        VentAxiaInternalHumiditySensor(coordinator),
     ]
     
     async_add_entities(entities)
@@ -51,7 +55,7 @@ class VentAxiaBaseSensor(SensorEntity):
         self._attr_unique_id = f"{coordinator.data['wifi_device_id']}_{sensor_type}"
         
     @property
-    def device_info(self) -> DeviceInfo:
+    def device_info(self) -> DeviceInfo | None:
         """Return device information."""
         return self._coordinator.device_info
 
@@ -134,7 +138,7 @@ class VentAxiaPowerSensor(VentAxiaBaseSensor):
         super().__init__(coordinator, "power")
         self._attr_name = "Power"
         self._attr_icon = "mdi:power"
-        self._attr_native_unit_of_measurement = PERCENTAGE
+        self._attr_native_unit_of_measurement = UnitOfPower.WATT
         self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
@@ -190,9 +194,10 @@ class VentAxiaSupplyTempSensor(VentAxiaBaseSensor):
 
     @property
     def native_value(self) -> float | None:
-        """Return the state of the sensor."""
-        return self._coordinator.device.supply_temp_c
-
+        """Return the state of the sensor."""   
+        
+        
+        return round(const.EXTRACT_WEIGHT * self._coordinator.device.extract_temp_c + (1 - const.EXTRACT_WEIGHT) * self._coordinator.device.extract_temp_c, 2)
 
 class VentAxiaSupplyAirflowSensor(VentAxiaBaseSensor):
     """Supply airflow sensor."""
@@ -202,6 +207,7 @@ class VentAxiaSupplyAirflowSensor(VentAxiaBaseSensor):
         super().__init__(coordinator, "supply_airflow")
         self._attr_name = "Supply Airflow"
         self._attr_icon = "mdi:weather-windy"
+        self._attr_native_unit_of_measurement = UnitOfVolumeFlowRate.LITERS_PER_SECOND
         self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
@@ -218,9 +224,44 @@ class VentAxiaExhaustAirflowSensor(VentAxiaBaseSensor):
         super().__init__(coordinator, "exhaust_airflow")
         self._attr_name = "Exhaust Airflow"
         self._attr_icon = "mdi:weather-windy"
+        self._attr_native_unit_of_measurement = UnitOfVolumeFlowRate.LITERS_PER_SECOND
         self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self) -> int | None:
         """Return the state of the sensor."""
         return self._coordinator.device.cm_af_exh
+    
+class VentAxiaExternalHumiditySensor(VentAxiaBaseSensor):
+    """External Humidity sensor."""
+
+    def __init__(self, coordinator: VentAxiaCoordinator) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, "external_humidity")
+        self._attr_name = "External Humidity"
+        self._attr_icon = "mdi:cloud-percent"
+        self._attr_device_class = SensorDeviceClass.HUMIDITY
+        self._attr_native_unit_of_measurement = PERCENTAGE
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the state of the sensor."""
+        return self._coordinator.device.exr_rh
+
+class VentAxiaInternalHumiditySensor(VentAxiaBaseSensor):
+    """Internal Humidity sensor."""
+
+    def __init__(self, coordinator: VentAxiaCoordinator) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, "internal_humidity")
+        self._attr_name = "Internal Humidity"
+        self._attr_icon = "mdi:cloud-percent"
+        self._attr_device_class = SensorDeviceClass.HUMIDITY
+        self._attr_native_unit_of_measurement = PERCENTAGE
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the state of the sensor."""
+        return self._coordinator.device.itk_rh

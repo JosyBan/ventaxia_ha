@@ -26,3 +26,6 @@ VALID_DURATIONS = [0, 15, 30, 45, 60]
 
 # Service names
 SERVICE_SET_AIRFLOW_MODE = "set_airflow_mode"
+
+# weighting for the supply temp
+EXTRACT_WEIGHT = 0.9

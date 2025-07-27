@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import voluptuous as vol
 
@@ -68,8 +68,10 @@ class VentAxiaCoordinator:
         self._callbacks: list[Callable[[], None]] = []
 
     @property
-    def device_info(self) -> DeviceInfo:
+    def device_info(self) -> DeviceInfo | None:
         """Return device information."""
+        if CONF_WIFI_DEVICE_ID not in self.data:
+            return None
         return DeviceInfo(
             identifiers={(DOMAIN, self.data[CONF_WIFI_DEVICE_ID])},
             name=self.device.dname or "VentAxia Device",
@@ -79,7 +81,7 @@ class VentAxiaCoordinator:
 
     async def async_send_airflow_mode(self, mode: str, duration: int) -> None:
         """Send airflow mode command to the device."""
-        await self.commands.set_airflow_mode(AIRFLOW_MODES[mode], duration)
+        await self.commands.send_airflow_mode_request(self.client,mode, duration)
 
     async def async_start(self) -> None:
         """Start the message receive loop."""
@@ -90,7 +92,7 @@ class VentAxiaCoordinator:
         """Receive loop task."""
         try:
             async for msg in self.client:
-                self.processor.process_message(msg)
+                await self.processor.process(msg)
                 self._notify_update()
         except asyncio.CancelledError:
             _LOGGER.debug("Receive loop cancelled")
