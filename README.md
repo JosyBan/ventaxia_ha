@@ -1,7 +1,6 @@
 # Ventaxia for Home Assistant
 
 [![GitHub Release][releases-shield]][releases]
-[![GitHub Activity][commits-shield]][commits]
 [![License][license-shield]](LICENSE)
 
 
@@ -125,8 +124,8 @@ And it was heavely inspired by [@CJNE](https://github.com/CJNE)'s [ha-myenergi] 
 [logo]: logo@2x.png
 [forum-shield]: https://img.shields.io/badge/community-forum-brightgreen.svg?style=for-the-badge
 [forum]: https://community.home-assistant.io/
-[license-shield]: https://img.shields.io/github/license/cjne/ha-myenergi.svg?style=for-the-badge
-[maintenance-shield]: https://img.shields.io/badge/maintainer-%40cjne-blue.svg?style=for-the-badge
-[releases-shield]: https://img.shields.io/github/release/cjne/ha-myenergi.svg?style=for-the-badge
-[releases]: https://github.com/cjne/ha-myenergi/releases
+[license-shield]: https://img.shields.io/github/license/JosyBan/ventaxia_ha.svg?style=for-the-badge
+[maintenance-shield]: https://img.shields.io/badge/maintainer-%40JosyBan-blue.svg?style=for-the-badge
+[releases-shield]: https://img.shields.io/github/v/release/JosyBan/ventaxia_ha.svg?style=for-the-badge
+[releases]: https://github.com/JosyBan/ventaxia_ha/releases
 [user_profile]: https://github.com/JosyBan
