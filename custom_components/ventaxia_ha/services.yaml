@@ -30,12 +30,12 @@ set_airflow_mode:
         select:
           options:
             - label: "0 minutes (reset only)"
-              value: 0
+              value: "0"  
             - label: "15 minutes"
-              value: 15
-            - label: "30 minutes" 
-              value: 30
+              value: "15" 
+            - label: "30 minutes"
+              value: "30" 
             - label: "45 minutes"
-              value: 45
+              value: "45"
             - label: "60 minutes"
-              value: 60
+              value: "60" 
