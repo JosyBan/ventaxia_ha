@@ -21,10 +21,10 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v4.2.2
 
-      - name: Set up Python {{ "${{ env.DEFAULT_PYTHON }}" }}
+      - name: Set up Python ${{ env.DEFAULT_PYTHON }}
         uses: actions/setup-python@v5.6.0
         with:
-          python-version: {{ "${{ env.DEFAULT_PYTHON }}" }}
+          python-version: ${{ env.DEFAULT_PYTHON }}
 
       - name: Upgrade pip
         run: |
