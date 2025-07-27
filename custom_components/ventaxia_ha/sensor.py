@@ -200,10 +200,15 @@ class VentAxiaSupplyTempSensor(VentAxiaBaseSensor):
     @property
     def native_value(self) -> float | None:
         """Return the state of the sensor."""
+        extract = self._coordinator.device.extract_temp_c
+        outdoor = self._coordinator.device.outdoor_temp_c
+
+        if extract is None or outdoor is None:
+            return None
 
         return round(
-            const.EXTRACT_WEIGHT * self._coordinator.device.extract_temp_c
-            + (1 - const.EXTRACT_WEIGHT) * self._coordinator.device.extract_temp_c,
+            const.EXTRACT_WEIGHT * extract
+            + (1 - const.EXTRACT_WEIGHT) * outdoor,
             2,
         )
 
