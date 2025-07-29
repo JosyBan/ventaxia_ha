@@ -2,8 +2,8 @@
 
 from custom_components.ventaxia_ha.const import (
     CONF_HOST,
-    CONF_PORT,
     CONF_IDENTITY,
+    CONF_PORT,
     CONF_PSK_KEY,
     CONF_WIFI_DEVICE_ID,
 )

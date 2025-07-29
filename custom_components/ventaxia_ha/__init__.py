@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Callable
 
-import voluptuous as vol 
+import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -135,10 +135,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def async_set_airflow_mode_service(call: ServiceCall):
         mode = call.data["mode"]
-        duration = call.data["duration"]
-        if mode not in AIRFLOW_MODES or duration not in VALID_DURATIONS:
+        duration_str = call.data["duration"]
+        if mode not in AIRFLOW_MODES or duration_str not in VALID_DURATIONS:
             _LOGGER.error("Invalid mode or duration in service call")
             return
+
+        duration = int(duration_str)  # Convert to integer for use in logic/API
+
         await coordinator.async_send_airflow_mode(mode, duration)
 
     hass.services.async_register(

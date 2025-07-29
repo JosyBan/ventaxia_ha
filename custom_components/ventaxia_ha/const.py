@@ -21,7 +21,7 @@ AIRFLOW_MODES = {
     "purge": 4,
 }
 
-VALID_DURATIONS = [0, 15, 30, 45, 60]
+VALID_DURATIONS = ["0", "15", "30", "45", "60"]
 
 # Service names
 SERVICE_SET_AIRFLOW_MODE = "set_airflow_mode"

@@ -207,8 +207,7 @@ class VentAxiaSupplyTempSensor(VentAxiaBaseSensor):
             return None
 
         return round(
-            const.EXTRACT_WEIGHT * extract
-            + (1 - const.EXTRACT_WEIGHT) * outdoor,
+            const.EXTRACT_WEIGHT * extract + (1 - const.EXTRACT_WEIGHT) * outdoor,
             2,
         )
 

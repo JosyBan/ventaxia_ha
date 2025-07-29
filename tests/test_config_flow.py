@@ -1,21 +1,25 @@
 # tests/test_config_flow.py
 
-import pytest
 from unittest.mock import AsyncMock
 
+import pytest
 from homeassistant import config_entries, data_entry_flow
-from homeassistant.core import HomeAssistant
 from homeassistant.const import CONF_HOST
+from homeassistant.core import HomeAssistant
 
-from custom_components.ventaxia_ha.const import DOMAIN
 # Ensure these exceptions are correctly imported from your config_flow.py
 from custom_components.ventaxia_ha.config_flow import CannotConnect, InvalidAuth
+from custom_components.ventaxia_ha.const import DOMAIN
+
 from .const import MOCK_CONFIG
 
 # Note: The `hass` fixture is provided by `pytest-homeassistant-custom-component`
 # We now use the `mock_ventaxia_iot_components` fixture from tests/conftest.py
 
-async def test_successful_config_flow(hass: HomeAssistant, mock_ventaxia_iot_components: dict):
+
+async def test_successful_config_flow(
+    hass: HomeAssistant, mock_ventaxia_iot_components: dict
+):
     """Test a successful config flow."""
     # Access the mock VentaxiaProtocol class from the components dict
     mock_ventaxia_protocol_class = mock_ventaxia_iot_components["protocol_class"]
@@ -44,10 +48,14 @@ async def test_successful_config_flow(hass: HomeAssistant, mock_ventaxia_iot_com
     mock_ventaxia_iot_components["client"].connect.assert_called_once()
 
 
-async def test_config_flow_cannot_connect(hass: HomeAssistant, mock_ventaxia_iot_components: dict):
+async def test_config_flow_cannot_connect(
+    hass: HomeAssistant, mock_ventaxia_iot_components: dict
+):
     """Test connection error during config flow."""
     # Make the mock VentaxiaProtocol's check_connection raise an exception for this test
-    mock_ventaxia_iot_components["protocol_class"].check_connection.side_effect = CannotConnect
+    mock_ventaxia_iot_components["protocol_class"].check_connection.side_effect = (
+        CannotConnect
+    )
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -66,10 +74,14 @@ async def test_config_flow_cannot_connect(hass: HomeAssistant, mock_ventaxia_iot
     mock_ventaxia_iot_components["client"].connect.assert_not_called()
 
 
-async def test_config_flow_invalid_auth(hass: HomeAssistant, mock_ventaxia_iot_components: dict):
+async def test_config_flow_invalid_auth(
+    hass: HomeAssistant, mock_ventaxia_iot_components: dict
+):
     """Test invalid authentication error during config flow."""
     # Make the mock VentaxiaProtocol's check_connection raise an InvalidAuth exception
-    mock_ventaxia_iot_components["protocol_class"].check_connection.side_effect = InvalidAuth
+    mock_ventaxia_iot_components["protocol_class"].check_connection.side_effect = (
+        InvalidAuth
+    )
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -87,7 +99,9 @@ async def test_config_flow_invalid_auth(hass: HomeAssistant, mock_ventaxia_iot_c
     mock_ventaxia_iot_components["client"].connect.assert_not_called()
 
 
-async def test_config_flow_already_configured(hass: HomeAssistant, mock_ventaxia_iot_components: dict, setup_integration):
+async def test_config_flow_already_configured(
+    hass: HomeAssistant, mock_ventaxia_iot_components: dict, setup_integration
+):
     """Test that duplicate host/device ID is aborted."""
     # A config entry is already set up by `setup_integration` fixture
 

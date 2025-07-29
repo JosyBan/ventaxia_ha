@@ -1,17 +1,22 @@
 # tests/test_sensor.py
 
+from unittest.mock import AsyncMock
+
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-from unittest.mock import AsyncMock
 
 from custom_components.ventaxia_ha.const import DOMAIN
+
 from .const import MOCK_SENSOR_DATA
 
 # `hass` and `setup_integration` fixtures are from tests/conftest.py
 # `mock_ventaxia_iot_components` fixture is also from tests/conftest.py
 
-async def test_sensor_entities(hass: HomeAssistant, setup_integration, mock_ventaxia_iot_components: dict):
+
+async def test_sensor_entities(
+    hass: HomeAssistant, setup_integration, mock_ventaxia_iot_components: dict
+):
     """Test that sensor entities are created and have correct initial state."""
     # The setup_integration fixture has loaded the component with mocked data.
 
@@ -22,7 +27,7 @@ async def test_sensor_entities(hass: HomeAssistant, setup_integration, mock_vent
     mock_device = mock_ventaxia_iot_components["device"]
 
     # --- Test Temperature Sensor ---
-    temp_entity_id = "sensor.ventaxia_device_temperature" # Adjust based on your entity_id generation
+    temp_entity_id = "sensor.ventaxia_device_temperature"  # Adjust based on your entity_id generation
     temp_state = hass.states.get(temp_entity_id)
     assert temp_state is not None
     # Assert state matches the mocked device's 'temp' property
@@ -45,7 +50,6 @@ async def test_sensor_entities(hass: HomeAssistant, setup_integration, mock_vent
     assert fan_speed_state is not None
     assert int(fan_speed_state.state) == mock_device.fan_speed
 
-
     # Ensure the underlying `get_state` (or equivalent) was called if your component polls
     # This might implicitly be called by the `processor.process` which updates `device`
 
@@ -63,11 +67,13 @@ async def test_sensor_entities(hass: HomeAssistant, setup_integration, mock_vent
     # If your component uses a DataUpdateCoordinator, you would call `coordinator.async_update_listeners()`.
     # For now, if sensors are polling, you might need to wait for next update cycle or trigger it manually.
     # A basic way to trigger an update without waiting for a real timer:
-    coordinator = hass.data[DOMAIN].get("your_config_entry_id_here") # Replace "your_config_entry_id_here"
-                                                                      # with the actual entry_id or dynamically get it.
+    coordinator = hass.data[DOMAIN].get(
+        "your_config_entry_id_here"
+    )  # Replace "your_config_entry_id_here"
+    # with the actual entry_id or dynamically get it.
     if coordinator:
-        coordinator._notify_update() # Directly call the notification method
-    await hass.async_block_till_done() # Allow Home Assistant to process state changes
+        coordinator._notify_update()  # Directly call the notification method
+    await hass.async_block_till_done()  # Allow Home Assistant to process state changes
 
     # Re-assert sensor states after the mock update
     temp_state_after_update = hass.states.get(temp_entity_id)
@@ -81,4 +87,6 @@ async def test_sensor_entities(hass: HomeAssistant, setup_integration, mock_vent
 
     # Test entity unique ID (good practice)
     entry = entity_registry.async_get(temp_entity_id)
-    assert entry.unique_id == f"{MOCK_CONFIG[CONF_WIFI_DEVICE_ID]}_temperature" # Adjust based on your unique_id format
+    assert (
+        entry.unique_id == f"{MOCK_CONFIG[CONF_WIFI_DEVICE_ID]}_temperature"
+    )  # Adjust based on your unique_id format

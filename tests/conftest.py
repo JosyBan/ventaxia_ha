@@ -1,11 +1,12 @@
 # C:\Users\josyb\Documents\Code\Vent Python\ventaxia_ha\tests\conftest.py
 
-import pytest
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
+# We also need to import the VentaxiaProtocol for config_flow, and VentaxiaDevice for its structure
 # Import classes from the external ventaxiaiot library that we need to mock
 from ventaxiaiot import (
     AsyncNativePskClient,
@@ -13,26 +14,19 @@ from ventaxiaiot import (
     VentClientCommands,
     VentMessageProcessor,
 )
-# We also need to import the VentaxiaProtocol for config_flow, and VentaxiaDevice for its structure
-from ventaxiaiot import (
-    AsyncNativePskClient,
-    PendingRequestTracker,
-    VentClientCommands,
-    VentMessageProcessor,
-)
-
 
 # Import constants from your integration
 from custom_components.ventaxia_ha.const import (
-    DOMAIN,
     CONF_HOST,
-    CONF_PORT,
     CONF_IDENTITY,
+    CONF_PORT,
     CONF_PSK_KEY,
     CONF_WIFI_DEVICE_ID,
+    DOMAIN,
 )
 
 # --- MOCKING THE EXTERNAL VENTAXIAIOT LIBRARY COMPONENTS ---
+
 
 @pytest.fixture
 async def mock_ventaxia_iot_components():
@@ -42,8 +36,10 @@ async def mock_ventaxia_iot_components():
     """
     # 1. Mock ventaxiaiot.AsyncNativePskClient (used by VentAxiaCoordinator)
     mock_async_native_psk_client = AsyncMock(spec=AsyncNativePskClient)
-    mock_async_native_psk_client.connect.return_value = None # Simulate successful connection
-    mock_async_native_psk_client.close.return_value = None # Simulate successful close
+    mock_async_native_psk_client.connect.return_value = (
+        None  # Simulate successful connection
+    )
+    mock_async_native_psk_client.close.return_value = None  # Simulate successful close
 
     # If your integration uses async for msg in client, we might need a more advanced mock for __aiter__
     # For basic setup/entity tests, the above might suffice if the loop is short-lived or doesn't yield actual messages.
@@ -55,8 +51,10 @@ async def mock_ventaxia_iot_components():
     # Populate the mock device with expected properties/attributes.
     # These are the values your sensors/entities will read.
     mock_ventaxia_device.dname = "Test VentAxia Device"
-    mock_ventaxia_device.firmware = "V1.0.0" # Example, add if your device_info uses it
-    mock_ventaxia_device.serial_no = "TEST12345" # Example, add if your device_info uses it
+    mock_ventaxia_device.firmware = "V1.0.0"  # Example, add if your device_info uses it
+    mock_ventaxia_device.serial_no = (
+        "TEST12345"  # Example, add if your device_info uses it
+    )
 
     # Populate properties that sensors would read
     mock_ventaxia_device.temp = 22.5
@@ -70,7 +68,9 @@ async def mock_ventaxia_iot_components():
     mock_ventaxia_processor = AsyncMock(spec=VentMessageProcessor)
     # Crucially, make the processor's 'device' attribute return our mock device
     mock_ventaxia_processor.device = mock_ventaxia_device
-    mock_ventaxia_processor.process.return_value = None # Simulates processing a message
+    mock_ventaxia_processor.process.return_value = (
+        None  # Simulates processing a message
+    )
 
     # 3. Mock ventaxiaiot.VentClientCommands
     mock_vent_client_commands = AsyncMock(spec=VentClientCommands)
@@ -82,19 +82,27 @@ async def mock_ventaxia_iot_components():
     mock_ventaxia_protocol_class.check_connection.return_value = True
 
     # Use patch context manager to apply all mocks during the test
-    with patch("ventaxiaiot.AsyncNativePskClient", return_value=mock_async_native_psk_client), \
-         patch("ventaxiaiot.VentMessageProcessor", return_value=mock_ventaxia_processor), \
-         patch("ventaxiaiot.VentClientCommands", return_value=mock_vent_client_commands), \
-         patch("ventaxiaiot.ventaxia_protocol.VentaxiaProtocol", new=mock_ventaxia_protocol_class):
+    with patch(
+        "ventaxiaiot.AsyncNativePskClient", return_value=mock_async_native_psk_client
+    ), patch(
+        "ventaxiaiot.VentMessageProcessor", return_value=mock_ventaxia_processor
+    ), patch(
+        "ventaxiaiot.VentClientCommands", return_value=mock_vent_client_commands
+    ), patch(
+        "ventaxiaiot.ventaxia_protocol.VentaxiaProtocol",
+        new=mock_ventaxia_protocol_class,
+    ):
         yield {
             "client": mock_async_native_psk_client,
             "processor": mock_ventaxia_processor,
             "commands": mock_vent_client_commands,
             "protocol_class": mock_ventaxia_protocol_class,
-            "device": mock_ventaxia_device, # Yield the mock device for direct state manipulation in tests
+            "device": mock_ventaxia_device,  # Yield the mock device for direct state manipulation in tests
         }
 
+
 # --- FIXTURE TO SET UP THE VENTAXIA INTEGRATION IN HOME ASSISTANT ---
+
 
 @pytest.fixture
 async def setup_integration(hass: HomeAssistant, mock_ventaxia_iot_components: dict):

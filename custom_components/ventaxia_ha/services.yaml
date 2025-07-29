@@ -3,9 +3,6 @@
 set_airflow_mode:
   name: Set Airflow Mode
   description: Set the airflow mode with a specific duration
-  target:
-    device:
-      integration: ventaxia_iot
   fields:
     mode:
       name: Mode
