@@ -1,11 +1,10 @@
 name: Test Suite
 
 on:
-  workflow_dispatch:  # Only runs manually
+  workflow_dispatch: # Only runs manually
 
 env:
   DEFAULT_PYTHON: 3.11
-
 
 jobs:
   tests:

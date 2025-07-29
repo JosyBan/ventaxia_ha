@@ -1,8 +1,6 @@
 # tests/test_config_flow.py
 
-from unittest.mock import AsyncMock
 
-import pytest
 from homeassistant import config_entries, data_entry_flow
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant

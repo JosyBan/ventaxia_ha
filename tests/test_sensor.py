@@ -1,14 +1,11 @@
 # tests/test_sensor.py
 
-from unittest.mock import AsyncMock
 
-import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
-from custom_components.ventaxia_ha.const import DOMAIN
-
-from .const import MOCK_SENSOR_DATA
+from custom_components.ventaxia_ha.const import CONF_WIFI_DEVICE_ID, DOMAIN
+from tests.const import MOCK_CONFIG
 
 # `hass` and `setup_integration` fixtures are from tests/conftest.py
 # `mock_ventaxia_iot_components` fixture is also from tests/conftest.py
