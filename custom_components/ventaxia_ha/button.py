@@ -6,7 +6,7 @@ import logging
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -47,9 +47,26 @@ class VentAxiaBaseButton(ButtonEntity):
         self._attr_name = name
 
     @property
-    def device_info(self) -> DeviceInfo | None:
+    def device_info(self) -> DeviceInfo | None:  # type: ignore[override]
         """Return device information."""
         return self._coordinator.device_info
+
+    @property
+    def available(self):  # type: ignore[override]
+        return self._coordinator.available
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass."""
+        self._coordinator.add_update_callback(self._handle_coordinator_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """When entity will be removed from hass."""
+        self._coordinator.remove_update_callback(self._handle_coordinator_update)
+
+    @callback
+    def _handle_coordinator_update(self):
+        """Handle updated data from coordinator."""
+        self.async_write_ha_state()
 
 
 class VentAxiaResetModeButton(VentAxiaBaseButton):

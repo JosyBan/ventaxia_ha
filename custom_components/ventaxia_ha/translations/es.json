@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Vent Axia Integración para el Sentinel Kinetic Advance S MVHR",
+        "description": "Introduce la información de conexión de tu dispositivo. La clave WiFi y el Identificador de Red se encuentran en la etiqueta del dispositivo. Más ayuda: https://github.com/JosyBan/ventaxia_ha",
+        "data": {
+          "host": "Anfitrión",
+          "port": "Puerto",
+          "identity": "Identidad",
+          "psk_key": "Clave WiFi del dispositivo (en la etiqueta)",
+          "wifi_device_id": "Identificador de Red del dispositivo (en la etiqueta)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "No se puede conectar al dispositivo Vent-Axia. Verifique el host, el puerto y la conexión de red.",
+      "auth": "El Clave WiFi o la identidad son incorrectos.",
+      "unknown": "Se produjo un error inesperado. Por favor, revise los registros."
+    }
+  }
+}

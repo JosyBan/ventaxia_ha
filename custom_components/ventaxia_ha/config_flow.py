@@ -53,6 +53,12 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             _LOGGER.error(
                 "Non-critical SSL shutdown error (device misbehavior): %s", err
             )
+        elif (
+            "bad record mac" in str(err).lower()
+            or "wrong version number" in str(err).lower()
+        ):
+            _LOGGER.error("Invalid credentials: %s", err)
+            raise InvalidAuth from err
         else:
             _LOGGER.error("Cannot connect to VentAxia device: %s", err)
             raise CannotConnect from err
@@ -77,6 +83,8 @@ class VentAxiaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 info = await validate_input(self.hass, user_input)
+            except InvalidAuth:
+                errors["base"] = "auth"
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except Exception:  # pylint: disable=broad-except
@@ -96,3 +104,7 @@ class VentAxiaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
 class CannotConnect(HomeAssistantError):
     """Error to indicate we cannot connect."""
+
+
+class InvalidAuth(HomeAssistantError):
+    """Error to indicate invalid authentication credentials."""

@@ -18,9 +18,11 @@ This integration relies on the [ventaxiaiot python library](https://github.com/J
 
 **This component will set up the following platforms.**
 
-| Platform | Description                                        |
-| -------- | -------------------------------------------------- |
-| `sensor` | Provides various readings for your Ventaxia device |
+| Platform  | Description                                        |
+| --------- | -------------------------------------------------- |
+| `sensor`  | Provides various readings for your Ventaxia device |
+| `button`  | Run some of the airflow commands                   |
+| `service` | Add a service to update the airflow                |
 
 ![example][logo]
 
@@ -62,9 +64,11 @@ After installation and restarting Home Assistant, you can configure the Ventaxia
 
         Host/IP Address: The IP address or hostname of your Ventaxia device on your local network.
 
-        Key: This is the WIFI Key printed on the device
+        Key: This is the WIFI Key printed on the device (see example image)
 
-        Deice ID: This is the WIFI SSID of the device
+        Deice ID: This is the WIFI SSID of the device (see example image)
+
+![example][module]
 
 Once successfully configured, the integration will automatically discover and create relevant sensor entities. You can find the full list of available entities under Settings > Devices & Services > Ventaxia integration once it's set up.
 
@@ -116,6 +120,7 @@ And it was heavely inspired by [@CJNE](https://github.com/CJNE)'s [ha-myenergi] 
 [discord]: https://discord.gg/Qa5fW2R
 [discord-shield]: https://img.shields.io/discord/330944238910963714.svg?style=for-the-badge
 [logo]: logo@2x.png
+[module]: advance_wifi_module.png
 [forum-shield]: https://img.shields.io/badge/community-forum-brightgreen.svg?style=for-the-badge
 [forum]: https://community.home-assistant.io/
 [license-shield]: https://img.shields.io/github/license/JosyBan/ventaxia_ha.svg?style=for-the-badge

@@ -51,6 +51,7 @@ class VentAxiaCoordinator:
         self.hass = hass
         self.entry = entry
         self.data = entry.data
+        self._connected = False  # Track connection state
 
         # Initialize connection components
         self.pending_tracker = PendingRequestTracker()
@@ -60,6 +61,7 @@ class VentAxiaCoordinator:
             psk_key=self.data[CONF_PSK_KEY],
             host=self.data[CONF_HOST],
             port=self.data[CONF_PORT],
+            connection_lost_callback=self._handle_disconnect,
         )
         self.processor = VentMessageProcessor(self.pending_tracker)
         self.commands = VentClientCommands(
@@ -81,6 +83,10 @@ class VentAxiaCoordinator:
             manufacturer="VentAxia",
         )
 
+    @property
+    def available(self) -> bool:
+        return self._connected
+
     async def async_send_airflow_mode(self, mode: str, duration: int) -> None:
         """Send airflow mode command to the device."""
         await self.commands.send_airflow_mode_request(self.client, mode, duration)
@@ -88,6 +94,7 @@ class VentAxiaCoordinator:
     async def async_start(self) -> None:
         """Start the message receive loop."""
         await self.client.connect()
+        self._connected = True
         self._receive_task = asyncio.create_task(self._receive_loop())
 
     async def _receive_loop(self) -> None:
@@ -118,7 +125,28 @@ class VentAxiaCoordinator:
         """Stop the coordinator."""
         if self._receive_task:
             self._receive_task.cancel()
-            await self._receive_task
+            try:
+                await self._receive_task
+            except asyncio.CancelledError:
+                pass  # avoid crashing unload
+
+    async def _handle_disconnect(self):
+        _LOGGER.warning("VentAxia connection lost. Attempting to reconnect...")
+        self._connected = False
+        await self.client.close()  # Ensure cleanup
+
+        for attempt in range(5):  # Try reconnect 5 times
+            try:
+                await self.client.connect()
+                self._connected = True  # Reset on successful connect
+                self._receive_task = asyncio.create_task(self._receive_loop())
+                _LOGGER.info("VentAxia reconnected successfully.")
+                return
+            except Exception as e:
+                _LOGGER.warning(f"Reconnect attempt {attempt + 1} failed: {e}")
+                await asyncio.sleep(10)
+
+        _LOGGER.error("Failed to reconnect after multiple attempts.")
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

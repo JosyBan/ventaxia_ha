@@ -2,30 +2,21 @@
   "config": {
     "step": {
       "user": {
-        "title": "{{cookiecutter.friendly_name}}",
-        "description": "If you need help with the configuration have a look here: https://github.com/{{cookiecutter.github_user}}/{{cookiecutter.project_name}}",
+        "title": "Vent Axia Integration for the Sentinel Kinetic Advance S MVHR",
+        "description": "Enter your device's connection info. The WiFi Key and SSID can be found on the device label. More help: https://github.com/JosyBan/ventaxia_ha",
         "data": {
-          "username": "Username",
-          "password": "Password"
+          "host": "Host",
+          "port": "Port",
+          "identity": "Identity",
+          "psk_key": "Device WiFi Key (on label)",
+          "wifi_device_id": "Device SSID ID (on label)"
         }
       }
     },
     "error": {
-      "auth": "Username/Password is wrong."
-    },
-    "abort": {
-      "single_instance_allowed": "Only a single instance is allowed."
-    }
-  },
-  "options": {
-    "step": {
-      "user": {
-        "data": {
-          "binary_sensor": "Binary sensor enabled",
-          "sensor": "Sensor enabled",
-          "switch": "Switch enabled"
-        }
-      }
+      "cannot_connect": "Cannot connect to the Vent-Axia device. Please check the host, port, and network connection.",
+      "auth": "The WiFi Key or identity is incorrect.",
+      "unknown": "Unexpected error occurred. Please check the logs."
     }
   }
 }
