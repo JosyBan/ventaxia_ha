@@ -133,7 +133,11 @@ class VentAxiaCoordinator:
     async def _handle_disconnect(self):
         _LOGGER.warning("VentAxia connection lost. Attempting to reconnect...")
         self._connected = False
-        await self.client.close()  # Ensure cleanup
+
+        if not self.client._closing:
+            await self.client.close()  # Ensure cleanup
+        else:
+            _LOGGER.debug("Client is already closing, skipping second close()")
 
         for attempt in range(5):  # Try reconnect 5 times
             try:
