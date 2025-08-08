@@ -24,7 +24,7 @@ This integration relies on the [ventaxiaiot python library](https://github.com/J
 | `button`  | Run some of the airflow commands                   |
 | `service` | Add a service to update the airflow                |
 
-![example][logo]
+![logo](logo@2x.png)
 
 ## HACS Installation
 
