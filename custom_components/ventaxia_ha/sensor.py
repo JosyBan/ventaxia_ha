@@ -2,6 +2,8 @@
 """Sensor platform for VentAxia IoT integration."""
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -13,6 +15,7 @@ from homeassistant.const import (
     REVOLUTIONS_PER_MINUTE,
     UnitOfPower,
     UnitOfTemperature,
+    UnitOfTime,
     UnitOfVolumeFlowRate,
 )
 from homeassistant.core import HomeAssistant, callback
@@ -36,7 +39,7 @@ async def async_setup_entry(
     entities = [
         VentAxiaSupplyRpmSensor(coordinator),
         VentAxiaExhaustRpmSensor(coordinator),
-        VentAxiaUserAirflowModeSensor(coordinator),
+        VentAxiaManualAirflowSensor(coordinator),
         VentAxiaPowerSensor(coordinator),
         VentAxiaIndoorTempSensor(coordinator),
         VentAxiaOutdoorTempSensor(coordinator),
@@ -45,6 +48,14 @@ async def async_setup_entry(
         VentAxiaExhaustAirflowSensor(coordinator),
         VentAxiaExternalHumiditySensor(coordinator),
         VentAxiaInternalHumiditySensor(coordinator),
+        VentAxiaServiceSensor(coordinator),
+        VentAxiaFilterSensor(coordinator),
+        VentAxiaSchedulesSensor(coordinator),
+        VentAxiaSilentHoursSensor(coordinator),
+        VentAxiaSummerBypassSensor(coordinator),
+        VentAxiaSummerBypassAFModeSensor(coordinator),
+        VentAxiaSummerBypassIndoorTempSensor(coordinator),
+        VentAxiaSummerBypassOutdoorTempSensor(coordinator),
     ]
 
     async_add_entities(entities)
@@ -116,31 +127,35 @@ class VentAxiaExhaustRpmSensor(VentAxiaBaseSensor):
         return self._coordinator.device.exh_rpm
 
 
-class VentAxiaUserAirflowModeSensor(VentAxiaBaseSensor):
+class VentAxiaManualAirflowSensor(VentAxiaBaseSensor):
     """User airflow mode sensor."""
 
     def __init__(self, coordinator: VentAxiaCoordinator) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator, "user_airflow_mode")
+        super().__init__(coordinator, "manual_airflow")
         self._attr_name = "Airflow Mode"
         self._attr_icon = "mdi:air-filter"
 
     @property
     def native_value(self) -> str | None:
         """Return the state of the sensor."""
-        return self._coordinator.device.get_user_airflow_mode
+        return self._coordinator.device.manual_airflow_mode
 
     @property
-    def extra_state_attributes(self) -> dict[str, any] | None:
+    def extra_state_attributes(self) -> dict[str, Any] | None:
         """Return additional state attributes."""
         device = self._coordinator.device
         attrs = {}
         if device.as_af is not None:
-            attrs["mode_code"] = device.as_af
-        if device.ar_min is not None:
-            attrs["duration_minutes"] = device.ar_min
-        if device.as_rsec is not None:
-            attrs["remaining_seconds"] = device.as_rsec
+            attrs["manual_airflow_mode"] = device.as_af
+        if device.manual_airflow_timer_min is not None:
+            attrs["manual_airflow_timer_min"] = device.manual_airflow_timer_min
+        if device.manual_airflow_sec is not None:
+            attrs["manual_airflow_sec"] = device.manual_airflow_sec
+        if device.manual_airflow_active is not None:
+            attrs["manual_airflow_active"] = device.manual_airflow_active
+        if device.manual_airflow_end_time is not None:
+            attrs["manual_airflow_end_time"] = device.manual_airflow_end_time
         return attrs if attrs else None
 
 
@@ -289,3 +304,140 @@ class VentAxiaInternalHumiditySensor(VentAxiaBaseSensor):
     def native_value(self) -> int | None:
         """Return the state of the sensor."""
         return self._coordinator.device.itk_rh
+
+
+class VentAxiaServiceSensor(VentAxiaBaseSensor):
+    """Service Info sensor."""
+
+    def __init__(self, coordinator: VentAxiaCoordinator) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, "service_info")
+        self._attr_name = "Service Info"
+        self._attr_icon = "mdi:tools"
+        self._attr_native_unit_of_measurement = UnitOfTime.MONTHS
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the state of the sensor."""
+        return self._coordinator.device.service_months_remaining
+
+
+class VentAxiaFilterSensor(VentAxiaBaseSensor):
+    """Filter Info sensor."""
+
+    def __init__(self, coordinator: VentAxiaCoordinator) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, "filter_months_remaining")
+        self._attr_name = "Filter Months Remaining"
+        self._attr_icon = "mdi:tools"
+        self._attr_native_unit_of_measurement = UnitOfTime.MONTHS
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the state of the sensor."""
+        return self._coordinator.device.filter_months_remaining
+
+
+class VentAxiaSchedulesSensor(VentAxiaBaseSensor):
+    """Schedules Info sensor."""
+
+    def __init__(self, coordinator: VentAxiaCoordinator) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, "schedules")
+        self._attr_name = "Schedules"
+        self._attr_icon = "mdi:calendar-clock"
+
+    @property
+    def native_value(self) -> int:
+        """Return number of defined schedules."""
+        return len(self._coordinator.device.schedules)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self._coordinator.device.schedules
+
+
+class VentAxiaSilentHoursSensor(VentAxiaBaseSensor):
+    """Silent Hours Info sensor."""
+
+    def __init__(self, coordinator: VentAxiaCoordinator) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, "silent_hours")
+        self._attr_name = "Silent Hours"
+        self._attr_icon = "mdi:weather-night"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return a short summary."""
+        sh = self._coordinator.device.silent_hours
+        if not sh:
+            return None
+        return f'{sh.get("from")}–{sh.get("to")}'
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self._coordinator.device.silent_hours
+
+
+class VentAxiaSummerBypassSensor(VentAxiaBaseSensor):
+    """Summer bypass mode sensor."""
+
+    def __init__(self, coordinator: VentAxiaCoordinator) -> None:
+        super().__init__(coordinator, "summer_bypass_mode")
+        self._attr_name = "Summer Bypass Mode"
+        self._attr_icon = "mdi:weather-sunny"
+
+    @property
+    def native_value(self) -> str:
+        """Return the current summer bypass mode."""
+        return self._coordinator.device.summer_bypass_mode
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        device = self._coordinator.device
+        attrs: dict[str, Any] = {}
+        attrs["af_mode"] = device.summer_bypass_af_mode
+        attrs["indoor_temp_c"] = device.summer_bypass_indoor_temp
+        attrs["outdoor_temp_c"] = device.summer_bypass_outdoor_temp
+        return attrs
+
+
+class VentAxiaSummerBypassAFModeSensor(VentAxiaBaseSensor):
+    """Summer Bypass AF Mode sensor."""
+
+    def __init__(self, coordinator: VentAxiaCoordinator) -> None:
+        super().__init__(coordinator, "summer_bypass_af_mode")
+        self._attr_name = "Summer Bypass Airflow Mode"
+        self._attr_icon = "mdi:fan"
+
+    @property
+    def native_value(self) -> str:
+        return self._coordinator.device.summer_bypass_af_mode
+
+
+class VentAxiaSummerBypassIndoorTempSensor(VentAxiaBaseSensor):
+    """Summer Bypass AF Mode sensor."""
+
+    def __init__(self, coordinator: VentAxiaCoordinator) -> None:
+        super().__init__(coordinator, "summer_bypass_indoor_temp")
+        self._attr_name = "Summer Bypass Indoor Temp"
+        self._attr_icon = "mdi:thermometer"
+        self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+
+    @property
+    def native_value(self) -> float | None:
+        return self._coordinator.device.summer_bypass_indoor_temp
+
+
+class VentAxiaSummerBypassOutdoorTempSensor(VentAxiaBaseSensor):
+    """Summer Bypass Outdoor Temp sensor."""
+
+    def __init__(self, coordinator: VentAxiaCoordinator) -> None:
+        super().__init__(coordinator, "summer_bypass_outdoor_temp")
+        self._attr_name = "Summer Bypass Outdoor Temp"
+        self._attr_icon = "mdi:thermometer"
+        self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+
+    @property
+    def native_value(self) -> float | None:
+        return self._coordinator.device.summer_bypass_outdoor_temp
