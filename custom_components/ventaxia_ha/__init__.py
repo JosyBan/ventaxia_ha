@@ -165,6 +165,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # --- Create the timer here ---
+    if "timer.manual_airflow_timer" not in hass.states.async_entity_ids("timer"):
+        await hass.services.async_call(
+            "timer",
+            "create",
+            {
+                "name": "manual_airflow_timer",
+                "duration": "00:15:00",
+            },
+        )
+
     async def async_set_airflow_mode_service(call: ServiceCall):
         mode = call.data["mode"]
         duration_str = call.data["duration"]
