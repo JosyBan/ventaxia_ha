@@ -3,24 +3,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
-from homeassistant.components.sensor import (
-    SensorDeviceClass,
-    SensorEntity,
-    SensorEntityDescription,
-    SensorStateClass,
-)
+from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (
-    PERCENTAGE,
-    REVOLUTIONS_PER_MINUTE,
-    UnitOfPower,
-    UnitOfTemperature,
-    UnitOfTime,
-    UnitOfVolumeFlowRate,
-)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -30,9 +16,10 @@ from custom_components.ventaxia_ha import const
 
 from . import VentAxiaCoordinator
 from .const import DOMAIN
+from .entities import ENTITY_DESCRIPTIONS
+from .runtime_timer import VentAxiaRuntimeTimer
 
 _LOGGER = logging.getLogger(__name__)
-
 
 # Simple mapping: entity key -> device attribute
 RETURN_VALUE: dict[str, str] = {
@@ -56,137 +43,6 @@ RETURN_VALUE: dict[str, str] = {
 }
 
 
-# Map of entity descriptions
-ENTITY_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
-    SensorEntityDescription(
-        key="supply_rpm",
-        name="Supply RPM",
-        icon="mdi:fan",
-        native_unit_of_measurement=REVOLUTIONS_PER_MINUTE,
-        state_class=SensorStateClass.MEASUREMENT,
-    ),
-    SensorEntityDescription(
-        key="exhaust_rpm",
-        name="Exhaust RPM",
-        icon="mdi:fan",
-        native_unit_of_measurement=REVOLUTIONS_PER_MINUTE,
-        state_class=SensorStateClass.MEASUREMENT,
-    ),
-    SensorEntityDescription(
-        key="manual_airflow",
-        name="Airflow Mode",
-        icon="mdi:air-filter",
-    ),
-    SensorEntityDescription(
-        key="manual_airflow_active",
-        name="Airflow Active",
-        icon="mdi:fan-clock",
-    ),
-    SensorEntityDescription(
-        key="power",
-        name="Power",
-        icon="mdi:power",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        state_class=SensorStateClass.MEASUREMENT,
-    ),
-    SensorEntityDescription(
-        key="indoor_temp",
-        name="Indoor Temperature",
-        device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        state_class=SensorStateClass.MEASUREMENT,
-    ),
-    SensorEntityDescription(
-        key="outdoor_temp",
-        name="Outdoor Temperature",
-        device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        state_class=SensorStateClass.MEASUREMENT,
-    ),
-    SensorEntityDescription(
-        key="supply_temp",
-        name="Supply Air Temperature",
-        device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        state_class=SensorStateClass.MEASUREMENT,
-    ),
-    SensorEntityDescription(
-        key="supply_airflow",
-        name="Supply Airflow",
-        icon="mdi:weather-windy",
-        native_unit_of_measurement=UnitOfVolumeFlowRate.LITERS_PER_SECOND,
-        state_class=SensorStateClass.MEASUREMENT,
-    ),
-    SensorEntityDescription(
-        key="exhaust_airflow",
-        name="Exhaust Airflow",
-        icon="mdi:weather-windy",
-        native_unit_of_measurement=UnitOfVolumeFlowRate.LITERS_PER_SECOND,
-        state_class=SensorStateClass.MEASUREMENT,
-    ),
-    SensorEntityDescription(
-        key="external_humidity",
-        name="External Humidity",
-        icon="mdi:cloud-percent",
-        device_class=SensorDeviceClass.HUMIDITY,
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-    ),
-    SensorEntityDescription(
-        key="internal_humidity",
-        name="Internal Humidity",
-        icon="mdi:cloud-percent",
-        device_class=SensorDeviceClass.HUMIDITY,
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-    ),
-    SensorEntityDescription(
-        key="service_info",
-        name="Service Info",
-        icon="mdi:tools",
-        native_unit_of_measurement=UnitOfTime.MONTHS,
-    ),
-    SensorEntityDescription(
-        key="filter_months_remaining",
-        name="Filter Months Remaining",
-        icon="mdi:tools",
-        native_unit_of_measurement=UnitOfTime.MONTHS,
-    ),
-    SensorEntityDescription(
-        key="schedules",
-        name="Schedules",
-        icon="mdi:calendar-clock",
-    ),
-    SensorEntityDescription(
-        key="silent_hours",
-        name="Silent Hours",
-        icon="mdi:weather-night",
-    ),
-    SensorEntityDescription(
-        key="summer_bypass_mode",
-        name="Summer Bypass Mode",
-        icon="mdi:weather-sunny",
-    ),
-    SensorEntityDescription(
-        key="summer_bypass_af_mode",
-        name="Summer Bypass Airflow Mode",
-        icon="mdi:fan",
-    ),
-    SensorEntityDescription(
-        key="summer_bypass_indoor_temp",
-        name="Summer Bypass Indoor Temp",
-        icon="mdi:thermometer",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-    ),
-    SensorEntityDescription(
-        key="summer_bypass_outdoor_temp",
-        name="Summer Bypass Outdoor Temp",
-        icon="mdi:thermometer",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-    ),
-)
-
-
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -198,6 +54,11 @@ async def async_setup_entry(
     async_add_entities(
         VentAxiaSensor(coordinator, description) for description in ENTITY_DESCRIPTIONS
     )
+
+    # Add the runtime timer entity
+    runtime_timer = VentAxiaRuntimeTimer(hass, coordinator, name="manual_airflow_timer")
+    coordinator.manual_airflow_timer = runtime_timer
+    async_add_entities([runtime_timer])
 
 
 class VentAxiaSensor(SensorEntity):
@@ -211,10 +72,6 @@ class VentAxiaSensor(SensorEntity):
         self._coordinator = coordinator
         self.entity_description = description
         self._attr_unique_id = f"{coordinator.data['wifi_device_id']}_{description.key}"
-        if description.key == "manual_airflow":
-            self._last_manual_airflow_active: bool | None = (
-                None  # Track last active state
-            )
 
     @property
     def device_info(self) -> DeviceInfo | None:  # type: ignore[override]
@@ -305,57 +162,22 @@ class VentAxiaSensor(SensorEntity):
     def _handle_coordinator_update(self):
         """Update HA state and handle manual airflow timer changes."""
         self.async_write_ha_state()
-
+        device = self._coordinator.device
         key = self.entity_description.key
 
-        if key == "manual_airflow":
-            device = self._coordinator.device
-            # Only proceed if active state changed
-            if self._last_manual_airflow_active == device.manual_airflow_active:
-                return
+        if (
+            key == "manual_airflow"
+            and self._coordinator.manual_airflow_timer is not None
+        ):
+            # Start/stop the runtime timer
+            timer_entity = self._coordinator.manual_airflow_timer
 
-            # Offload timer start/cancel to background task
-            self.hass.async_create_task(self._update_manual_airflow_timer())
-
-    async def _update_manual_airflow_timer(self):
-        """Start or cancel the manual airflow timer only on state change."""
-        device = self._coordinator.device
-        timer_entity = "timer.manual_airflow_timer"
-
-        self._last_manual_airflow_active = device.manual_airflow_active
-
-        async def call_service(service: str, data: dict):
-            """Helper to call a service safely in fire-and-forget mode."""
-            try:
-                await self.hass.services.async_call("timer", service, data)
-            except Exception as e:
-                _LOGGER.error("Failed to call timer.%s with %s: %s", service, data, e)
-
-        if device.manual_airflow_active:
-            # Compute remaining seconds
-            remaining_sec = max(
-                0,
-                int(
-                    (
-                        device.manual_airflow_end_time - datetime.now(timezone.utc)
-                    ).total_seconds()
-                ),
-            )
-            if remaining_sec > 0:
+            if device.manual_airflow_active:
                 self.hass.async_create_task(
-                    call_service(
-                        "start",
-                        {
-                            "entity_id": timer_entity,
-                            "duration": remaining_sec,
-                        },
+                    timer_entity.async_start_timer(
+                        duration_minutes=device.manual_airflow_timer_min
                     )
                 )
-        else:
-            # Cancel timer if airflow is no longer active
-            self.hass.async_create_task(
-                call_service(
-                    "cancel",
-                    {"entity_id": timer_entity},
-                )
-            )
+            else:
+                # Optionally stop/cancel the timer if airflow ends early
+                self.hass.async_create_task(timer_entity.async_cancel_timer())

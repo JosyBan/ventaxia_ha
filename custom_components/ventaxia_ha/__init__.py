@@ -30,6 +30,7 @@ from .const import (
     SERVICE_SET_AIRFLOW_MODE,
     VALID_DURATIONS,
 )
+from .runtime_timer import VentAxiaRuntimeTimer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class VentAxiaCoordinator:
         self.hass = hass
         self.entry = entry
         self.data = entry.data
+        self.manual_airflow_timer: VentAxiaRuntimeTimer | None = None
         self._connected = False  # Track connection state
 
         # Initialize connection components
@@ -164,17 +166,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    # --- Create the timer here ---
-    if "timer.manual_airflow_timer" not in hass.states.async_entity_ids("timer"):
-        await hass.services.async_call(
-            "timer",
-            "create",
-            {
-                "name": "manual_airflow_timer",
-                "duration": "00:15:00",
-            },
-        )
 
     async def async_set_airflow_mode_service(call: ServiceCall):
         mode = call.data["mode"]
