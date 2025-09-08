@@ -28,7 +28,11 @@ from .const import (
     CONF_WIFI_DEVICE_ID,
     DOMAIN,
     SERVICE_SET_AIRFLOW_MODE,
+    SERVICE_SET_SCHEDULE,
+    TIME_REGEX,
+    VALID_DAYS,
     VALID_DURATIONS,
+    VALID_MODES,
 )
 from .runtime_timer import VentAxiaRuntimeTimer
 
@@ -40,6 +44,16 @@ SERVICE_SET_AIRFLOW_MODE_SCHEMA = vol.Schema(
     {
         vol.Required("mode"): vol.In(list(AIRFLOW_MODES.keys())),
         vol.Required("duration"): vol.In(VALID_DURATIONS),
+    }
+)
+
+SERVICE_SET_SCHEDULE_SCHEMA = vol.Schema(
+    {
+        vol.Required("name"): vol.All(str, vol.Length(min=1)),
+        vol.Required("from"): vol.Match(TIME_REGEX),  # HH:MM
+        vol.Required("to"): vol.Match(TIME_REGEX),
+        vol.Required("days"): vol.Any("Every day", [vol.In(VALID_DAYS)]),
+        vol.Required("mode"): vol.In(VALID_MODES),
     }
 )
 
@@ -92,6 +106,10 @@ class VentAxiaCoordinator:
     async def async_send_airflow_mode(self, mode: str, duration: int) -> None:
         """Send airflow mode command to the device."""
         await self.commands.send_airflow_mode_request(self.client, mode, duration)
+
+    async def async_send_update(self, data: dict) -> None:
+        """Send update command to the device."""
+        await self.commands.send_update_request(self.client, data)
 
     async def async_start(self) -> None:
         """Start the message receive loop."""
@@ -178,11 +196,53 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         await coordinator.async_send_airflow_mode(mode, duration)
 
+    async def async_update_schedule_service(call: ServiceCall):
+        schedules = coordinator.processor.device._schedules  # Schedule dataclass
+
+        ts_update = call.data.get("ts")  # e.g. {"ts1": {from, to, days, mode}}
+        shrs_update = call.data.get("shrs")  # e.g. {from, to, days, mode}
+        data_to_send = {}
+
+        # Helper function to handle encoding and sending
+        async def _process_update(decoded_dict: dict):
+
+            val = schedules.encode_ts_field(decoded_dict)  # ✅decode→int
+            name = decoded_dict.get("name")
+            if name == "shrs":
+                schedules.shrs_raw = val  # keep raw
+                schedules.silent_hours_decoded = decoded_dict  # keep decoded
+            else:  # ts
+                schedules.ts_raw[name] = val  # keep raw
+                schedules.ts_decoded[name] = decoded_dict  # keep decoded
+            data_to_send[name] = val
+            return True
+
+        # Process ts_update
+        if ts_update:
+            if not _process_update(ts_update):
+                return
+
+        # Process shrs_update
+        if shrs_update:
+            shrs_update["name"] = "shrs"
+            if not _process_update(shrs_update):
+                return
+
+        if data_to_send:
+            await coordinator.async_send_update(data_to_send)
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_SET_AIRFLOW_MODE,
         async_set_airflow_mode_service,
         schema=SERVICE_SET_AIRFLOW_MODE_SCHEMA,
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_SCHEDULE,
+        async_update_schedule_service,
+        schema=SERVICE_SET_SCHEDULE_SCHEMA,
     )
 
     return True

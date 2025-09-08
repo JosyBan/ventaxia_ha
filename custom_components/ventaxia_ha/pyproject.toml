@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ventaxia_ha"
-version = "0.1.5"
+version = "0.1.6"
 description = "Home Assistant integration for VentAxia IoT devices"
 authors = [{name = "josyban"}]
-dependencies = ["ventaxiaiot>=0.1.6"]
+dependencies = ["ventaxiaiot>=0.1.7"]

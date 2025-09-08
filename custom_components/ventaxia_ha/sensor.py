@@ -12,10 +12,8 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util.dt import as_utc
 
-from custom_components.ventaxia_ha import const
-
 from . import VentAxiaCoordinator
-from .const import DOMAIN
+from .const import DOMAIN, EXTRACT_WEIGHT
 from .entities import ENTITY_DESCRIPTIONS
 from .runtime_timer import VentAxiaRuntimeTimer
 
@@ -115,8 +113,8 @@ class VentAxiaSensor(SensorEntity):
             if device.extract_temp_c is None or device.outdoor_temp_c is None:
                 return None
             return round(
-                const.EXTRACT_WEIGHT * device.extract_temp_c
-                + (1 - const.EXTRACT_WEIGHT) * device.outdoor_temp_c,
+                EXTRACT_WEIGHT * device.extract_temp_c
+                + (1 - EXTRACT_WEIGHT) * device.outdoor_temp_c,
                 2,
             )
 

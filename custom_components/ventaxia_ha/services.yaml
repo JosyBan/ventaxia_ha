@@ -36,3 +36,31 @@ set_airflow_mode:
               value: "45"
             - label: "60 minutes"
               value: "60"
+update_schedule:
+  name: Update Schedule or Silent Hours
+  description: Set a timer schedule (tsN) or silent hours (shrs).
+  fields:
+    ts:
+      name: Timer Schedules
+      description: A single timer schedule.
+      example:
+        ts1:
+          name: "ts1"
+          from: "08:00"
+          to: "20:00"
+          days: "Mon,Wed,Fri"
+          mode: "Normal"
+      required: false
+      selector:
+        object: {}
+    shrs:
+      name: Silent Hours
+      description: Silent hours schedule.
+      example:
+        from: "22:00"
+        to: "06:00"
+        days: "Every day"
+        mode: "Low"
+      required: false
+      selector:
+        object: {}
