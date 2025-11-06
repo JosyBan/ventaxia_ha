@@ -1,4 +1,4 @@
 -r requirements_dev.txt
-pytest-homeassistant-custom-component==0.13.263
+pytest-homeassistant-custom-component==0.13.294
 ventaxiaiot>=0.1.6
 propcache
