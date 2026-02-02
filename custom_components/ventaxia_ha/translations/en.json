@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Vent Axia Integration for the Sentinel Kinetic Advance S MVHR",
-        "description": "Enter your device's connection info. The WiFi Key and SSID can be found on the device label. More help: https://github.com/JosyBan/ventaxia_ha",
+        "description": "Enter your device's connection info. The WiFi Key and SSID can be found on the device label.",
         "data": {
           "host": "Host",
           "port": "Port",
