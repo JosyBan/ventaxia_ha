@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Vent Axia Integración para el Sentinel Kinetic Advance S MVHR",
-        "description": "Introduce la información de conexión de tu dispositivo. La clave WiFi y el Identificador de Red se encuentran en la etiqueta del dispositivo. Más ayuda: https://github.com/JosyBan/ventaxia_ha",
+        "description": "Introduce la información de conexión de tu dispositivo. La clave WiFi y el Identificador de Red se encuentran en la etiqueta del dispositivo.",
         "data": {
           "host": "Anfitrión",
           "port": "Puerto",
