@@ -11,7 +11,7 @@ CONF_PSK_KEY = "psk_key"
 CONF_WIFI_DEVICE_ID = "wifi_device_id"
 
 # Default values
-DEFAULT_PORT = 47819
+DEFAULT_PORT = 47811
 
 # Airflow modes
 AIRFLOW_MODES = {
@@ -21,16 +21,20 @@ AIRFLOW_MODES = {
     "boost": 3,
     "purge": 4,
 }
+
+
 VALID_DURATIONS = ["0", "15", "30", "45", "60"]
 # Service names
 SERVICE_SET_AIRFLOW_MODE = "set_airflow_mode"
+SERVICE_SET_SCHEDULE = "update_schedule_or_silent_hours"
+SERVICE_SET_SUMMER_BYPASS = "set_summer_bypass"
 
 # update_schedule_service
 VALID_DAYS = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
 VALID_MODES = {"Normal", "Low", "Boost", "Purge"}
+VALID_BPASS_AF_MODES = {"Off", "Normal", "Low", "Boost", "Purge"}
+VALID_BYPASS_MODES = {"Off", "Normal", "Evening fresh", "Night fresh"}
 TIME_REGEX = r"^(?:[01]?\d|2[0-3]):[0-5]\d$"
-# Service names
-SERVICE_SET_SCHEDULE = "update_schedule_or_silent_hours"
 
 
 # weighting for the supply temp

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable
+from typing import Callable, Dict, Optional
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
@@ -29,6 +29,7 @@ from .const import (
     DOMAIN,
     SERVICE_SET_AIRFLOW_MODE,
     SERVICE_SET_SCHEDULE,
+    SERVICE_SET_SUMMER_BYPASS,
     TIME_REGEX,
     VALID_DAYS,
     VALID_DURATIONS,
@@ -38,7 +39,7 @@ from .runtime_timer import VentAxiaRuntimeTimer
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON, Platform.SELECT]
 
 SERVICE_SET_AIRFLOW_MODE_SCHEMA = vol.Schema(
     {
@@ -47,13 +48,29 @@ SERVICE_SET_AIRFLOW_MODE_SCHEMA = vol.Schema(
     }
 )
 
+
+def validate_days(value: str) -> str:
+    if value == "Every day" or all(d.strip() in VALID_DAYS for d in value.split(",")):
+        return value
+    raise vol.Invalid(f"Invalid days: {value}")
+
+
 SERVICE_SET_SCHEDULE_SCHEMA = vol.Schema(
     {
         vol.Required("name"): vol.All(str, vol.Length(min=1)),
         vol.Required("from"): vol.Match(TIME_REGEX),  # HH:MM
         vol.Required("to"): vol.Match(TIME_REGEX),
-        vol.Required("days"): vol.Any("Every day", [vol.In(VALID_DAYS)]),
+        vol.Required("days"): vol.All(str, validate_days),
         vol.Required("mode"): vol.In(VALID_MODES),
+    }
+)
+
+SERVICE_SET_SUMMER_BYPASS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("m_byp"): vol.In([0, 1, 2, 3]),  # Bypass modes
+        vol.Optional("af_enp"): vol.In([0, 1, 2, 3, 4]),  # Airflow modes
+        vol.Optional("indoor_temp"): vol.Coerce(float),
+        vol.Optional("outdoor_temp"): vol.Coerce(float),
     }
 )
 
@@ -68,6 +85,7 @@ class VentAxiaCoordinator:
         self.data = entry.data
         self.manual_airflow_timer: VentAxiaRuntimeTimer | None = None
         self._connected = False  # Track connection state
+        self.commission_mode = "normal"
 
         # Initialize connection components
         self.pending_tracker = PendingRequestTracker()
@@ -107,9 +125,17 @@ class VentAxiaCoordinator:
         """Send airflow mode command to the device."""
         await self.commands.send_airflow_mode_request(self.client, mode, duration)
 
-    async def async_send_update(self, data: dict) -> None:
+    async def async_start_commissioning(self, airflow="normal") -> None:
+        """Send start_commissioning command to the device."""
+        await self.commands.start_commissioning(self.client, airflow)
+
+    async def async_stop_commissioning(self) -> None:
+        """Send stop_commissioning command to the device."""
+        await self.commands.stop_commissioning(self.client)
+
+    async def async_send_update(self, data: dict, topic: str = "ee") -> None:
         """Send update command to the device."""
-        await self.commands.send_update_request(self.client, data)
+        await self.commands.send_update_request(self.client, data, topic)
 
     async def async_start(self) -> None:
         """Start the message receive loop."""
@@ -198,38 +224,64 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def async_update_schedule_service(call: ServiceCall):
         schedules = coordinator.processor.device._schedules  # Schedule dataclass
+        # Prepare a dict with expected keys
+        decoded: Dict[str, Optional[str]] = {
+            key: call.data.get(key) for key in ["name", "from", "to", "days", "mode"]
+        }
 
-        ts_update = call.data.get("ts")  # e.g. {"ts1": {from, to, days, mode}}
-        shrs_update = call.data.get("shrs")  # e.g. {from, to, days, mode}
         data_to_send = {}
 
         # Helper function to handle encoding and sending
-        async def _process_update(decoded_dict: dict):
+        if decoded and (name := decoded.get("name")):
+            val = schedules.encode_ts_field(decoded)  # ✅decode→int
 
-            val = schedules.encode_ts_field(decoded_dict)  # ✅decode→int
-            name = decoded_dict.get("name")
             if name == "shrs":
                 schedules.shrs_raw = val  # keep raw
-                schedules.silent_hours_decoded = decoded_dict  # keep decoded
+                schedules.silent_hours_decoded = decoded  # keep decoded
             else:  # ts
                 schedules.ts_raw[name] = val  # keep raw
-                schedules.ts_decoded[name] = decoded_dict  # keep decoded
+                schedules.ts_decoded[name] = decoded  # keep decoded
             data_to_send[name] = val
-            return True
-
-        # Process ts_update
-        if ts_update:
-            if not _process_update(ts_update):
-                return
-
-        # Process shrs_update
-        if shrs_update:
-            shrs_update["name"] = "shrs"
-            if not _process_update(shrs_update):
-                return
 
         if data_to_send:
-            await coordinator.async_send_update(data_to_send)
+            try:
+                await coordinator.async_send_update(data_to_send)
+            except ValueError as err:
+                _LOGGER.error("Failed to send update: %s", err)
+
+    async def async_set_summer_bypass_service(call: ServiceCall):
+        """Handle service call to update summer bypass settings."""
+
+        data_to_send = {}
+
+        # Bypass mode (0–3)
+        m_byp = call.data.get("m_byp")
+        if m_byp is not None:
+            data_to_send["m_byp"] = int(m_byp)
+
+        # AF mode (1–4)
+        af_enp = call.data.get("af_enp")
+        if af_enp is not None:
+            data_to_send["af_enp"] = int(af_enp)
+
+        # Indoor temperature (°C → ×10)
+        indoor = call.data.get("indoor_temp")
+        if indoor is not None:
+            data_to_send["by_ti"] = int(float(indoor) * 10)
+
+        # Outdoor temperature (°C → ×10)
+        outdoor = call.data.get("outdoor_temp")
+        if outdoor is not None:
+            data_to_send["by_to"] = int(float(outdoor) * 10)
+
+        if not data_to_send:
+            _LOGGER.error("No valid fields provided for summer bypass update")
+            return
+
+        try:
+            await coordinator.async_send_update(data_to_send, topic="ee")
+        except ValueError as err:
+            _LOGGER.error("Failed to send summer bypass update: %s", err)
 
     hass.services.async_register(
         DOMAIN,
@@ -243,6 +295,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         SERVICE_SET_SCHEDULE,
         async_update_schedule_service,
         schema=SERVICE_SET_SCHEDULE_SCHEMA,
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_SUMMER_BYPASS,
+        async_set_summer_bypass_service,
+        schema=SERVICE_SET_SUMMER_BYPASS_SCHEMA,
     )
 
     return True

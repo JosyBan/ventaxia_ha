@@ -29,6 +29,8 @@ async def async_setup_entry(
         VentAxiaNormalModeButton(coordinator),
         VentAxiaBoostModeButton(coordinator),
         VentAxiaPurgeModeButton(coordinator),
+        VentAxiaCommissionModeButton(coordinator),
+        VentAxiaStopCommissioningButton(coordinator),
     ]
 
     async_add_entities(entities)
@@ -84,6 +86,45 @@ class VentAxiaResetModeButton(VentAxiaBaseButton):
             _LOGGER.info("Reset airflow mode command sent")
         except Exception as err:
             _LOGGER.error("Failed to send reset command: %s", err)
+
+
+class VentAxiaCommissionModeButton(VentAxiaBaseButton):
+    """Button to start commissioning based on dropdown selection."""
+
+    def __init__(self, coordinator: VentAxiaCoordinator):
+        self._coordinator = coordinator
+        self._button_type = "commission_mode"
+        self._attr_unique_id = (
+            f"{coordinator.data['wifi_device_id']}_commission_mode_button"
+        )
+        self._attr_name = "Start Commissioning"
+        self._attr_icon = "mdi:fan"
+
+    async def async_press(self) -> None:
+        """Send commissioning command using dropdown selection."""
+        airflow = self._coordinator.commission_mode
+        try:
+            await self._coordinator.async_start_commissioning(airflow)
+            _LOGGER.info("Commissioning started with mode: %s", airflow)
+        except Exception as err:
+            _LOGGER.error("Failed to start commissioning: %s", err)
+
+
+class VentAxiaStopCommissioningButton(VentAxiaBaseButton):
+    """Button to stop the commissioning keep-alive loop."""
+
+    def __init__(self, coordinator: VentAxiaCoordinator) -> None:
+        """Initialize the button."""
+        super().__init__(coordinator, "stop_commissioning_mode", "Stop Commissioning")
+        self._attr_icon = "mdi:stop-circle"
+
+    async def async_press(self) -> None:
+        """Stop the commissioning loop."""
+        try:
+            await self._coordinator.async_stop_commissioning()
+            _LOGGER.info("Commissioning loop stopped")
+        except Exception as err:
+            _LOGGER.error("Failed to stop commissioning: %s", err)
 
 
 class VentAxiaNormalModeButton(VentAxiaBaseButton):

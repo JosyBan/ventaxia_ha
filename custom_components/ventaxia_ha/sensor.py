@@ -30,8 +30,8 @@ RETURN_VALUE: dict[str, str] = {
     "outdoor_temp": "outdoor_temp_c",
     "supply_airflow": "cm_af_sup",
     "exhaust_airflow": "cm_af_exh",
-    "external_humidity": "exr_rh",
-    "internal_humidity": "itk_rh",
+    "external_humidity": "itk_rh",  # swapped: actual external
+    "internal_humidity": "exr_rh",  # swapped: actual internal
     "service_info": "service_months_remaining",
     "filter_months_remaining": "filter_months_remaining",
     "summer_bypass_mode": "summer_bypass_mode",
@@ -102,7 +102,7 @@ class VentAxiaSensor(SensorEntity):
 
         # Other complex cases
         if key == "schedules":
-            return len(device.schedules)
+            return len(device.schedules) if device.schedules is not None else 0
         if key == "silent_hours":
             sh = device.silent_hours
             if not sh:
@@ -142,10 +142,11 @@ class VentAxiaSensor(SensorEntity):
             return attrs if attrs else None
 
         if key == "schedules":
-            return device.schedules
+            # Force HA to see a new object every update
+            return {k: dict(v) for k, v in device.schedules.items()}
 
         if key == "silent_hours":
-            return device.silent_hours
+            return dict(device.silent_hours) if device.silent_hours else None
 
         if key == "summer_bypass_mode":
             return {

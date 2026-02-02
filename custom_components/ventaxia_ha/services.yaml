@@ -36,31 +36,72 @@ set_airflow_mode:
               value: "45"
             - label: "60 minutes"
               value: "60"
-update_schedule:
+update_schedule_or_silent_hours:
   name: Update Schedule or Silent Hours
-  description: Set a timer schedule (tsN) or silent hours (shrs).
+  description: Set a timed schedule (tsN) or silent hours (shrs).
   fields:
-    ts:
-      name: Timer Schedules
-      description: A single timer schedule.
-      example:
-        ts1:
-          name: "ts1"
-          from: "08:00"
-          to: "20:00"
-          days: "Mon,Wed,Fri"
-          mode: "Normal"
-      required: false
+    name:
+      name: Name
+      description: Schedule name (e.g., ts1, ts2 or 'shrs' for silent hours)
+      required: true
       selector:
-        object: {}
-    shrs:
-      name: Silent Hours
-      description: Silent hours schedule.
-      example:
-        from: "22:00"
-        to: "06:00"
-        days: "Every day"
-        mode: "Low"
-      required: false
+        text:
+    from:
+      name: From
+      description: Start time (HH:MM)
+      required: true
       selector:
-        object: {}
+        text:
+    to:
+      name: To
+      description: End time (HH:MM)
+      required: true
+      selector:
+        text:
+    days:
+      name: Days
+      description: Days of the week (Mon, Tue, Wen, Thr, Fri, Sat, Sun) or "Every day"
+      required: true
+      selector:
+        text:
+    mode:
+      name: Mode
+      description: Operation mode (Low, Normal, Boost, Purge)
+      required: true
+      selector:
+        text:
+set_summer_bypass:
+  name: Set Summer Bypass
+  description: Update summer bypass mode, AF mode, and temperatures.
+  fields:
+    m_byp:
+      name: Bypass Mode
+      description: >
+        Summer bypass mode:
+        0 = Off,
+        1 = Normal,
+        2 = Evening fresh,
+        3 = Night fresh.
+      required: false
+      example: 1
+    af_enp:
+      name: AF Mode
+      description: >
+        Airflow mode:
+        0 = Off
+        1 = Normal,
+        2 = Low,
+        3 = Boost,
+        4 = Purge.
+      required: false
+      example: 3
+    indoor_temp:
+      name: Indoor Temperature
+      description: Indoor temperature in Celsius (optional)
+      required: false
+      example: 19.0
+    outdoor_temp:
+      name: Outdoor Temperature
+      description: Outdoor temperature in Celsius (optional)
+      required: false
+      example: 12.1

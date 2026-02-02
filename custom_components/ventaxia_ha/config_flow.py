@@ -27,7 +27,7 @@ _LOGGER = logging.getLogger(__name__)
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_HOST): str,
-        vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
+        vol.Required(CONF_PORT, description={"suggested_value": DEFAULT_PORT}): int,
         vol.Required(CONF_IDENTITY): str,
         vol.Required(CONF_PSK_KEY): str,
         vol.Required(CONF_WIFI_DEVICE_ID): str,
