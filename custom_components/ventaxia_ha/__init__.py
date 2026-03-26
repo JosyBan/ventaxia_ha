@@ -62,7 +62,8 @@ SERVICE_SET_SCHEDULE_SCHEMA = vol.Schema(
         vol.Required("to"): vol.Match(TIME_REGEX),
         vol.Required("days"): vol.All(str, validate_days),
         vol.Required("mode"): vol.In(VALID_MODES),
-    }
+    },
+    extra=vol.ALLOW_EXTRA,  # <-- allows additional keys like "delete"
 )
 
 SERVICE_SET_SUMMER_BYPASS_SCHEMA = vol.Schema(
@@ -86,6 +87,7 @@ class VentAxiaCoordinator:
         self.manual_airflow_timer: VentAxiaRuntimeTimer | None = None
         self._connected = False  # Track connection state
         self.commission_mode = "normal"
+        self._listener_count = 0
 
         # Initialize connection components
         self.pending_tracker = PendingRequestTracker()
@@ -104,7 +106,8 @@ class VentAxiaCoordinator:
 
         self.device = self.processor.device
         self._receive_task: asyncio.Task | None = None
-        self._callbacks: list[Callable[[], None]] = []
+        self._callbacks: set[Callable[[], None]] = set()
+        self._pending_close_task: asyncio.Task | None = None
 
     @property
     def device_info(self) -> DeviceInfo | None:
@@ -123,25 +126,54 @@ class VentAxiaCoordinator:
 
     async def async_send_airflow_mode(self, mode: str, duration: int) -> None:
         """Send airflow mode command to the device."""
+        await self.ensure_connection()
         await self.commands.send_airflow_mode_request(self.client, mode, duration)
+        self.hass.async_create_task(self._service_close_guard())
 
     async def async_start_commissioning(self, airflow="normal") -> None:
         """Send start_commissioning command to the device."""
+        await self.ensure_connection()
         await self.commands.start_commissioning(self.client, airflow)
+        self.hass.async_create_task(self._service_close_guard())
 
     async def async_stop_commissioning(self) -> None:
         """Send stop_commissioning command to the device."""
+        await self.ensure_connection()
         await self.commands.stop_commissioning(self.client)
+        self.hass.async_create_task(self._service_close_guard())
 
     async def async_send_update(self, data: dict, topic: str = "ee") -> None:
         """Send update command to the device."""
+        await self.ensure_connection()
         await self.commands.send_update_request(self.client, data, topic)
+        self.hass.async_create_task(self._service_close_guard())
 
     async def async_start(self) -> None:
         """Start the message receive loop."""
+        self._connected = False
+
+    async def ensure_connection(self):
+        """Ensure TCP connection exists."""
+        if self._connected:
+            return
+
+        _LOGGER.debug("Opening VentAxia TCP connection")
         await self.client.connect()
         self._connected = True
-        self._receive_task = asyncio.create_task(self._receive_loop())
+
+        if not self._receive_task or self._receive_task.done():
+            self._receive_task = asyncio.create_task(self._receive_loop())
+
+    async def _service_close_guard(self, delay: float = 5.0):
+        if self._pending_close_task and not self._pending_close_task.done():
+            return  # Already scheduled
+        self._pending_close_task = asyncio.create_task(self._delayed_close(delay))
+
+    async def _delayed_close(self, delay: float):
+        """Delay closing connection to avoid racing service calls."""
+        await asyncio.sleep(delay)
+        if self._listener_count == 0:
+            await self._close_connection()
 
     async def _receive_loop(self) -> None:
         """Receive loop task."""
@@ -151,8 +183,8 @@ class VentAxiaCoordinator:
                 self._notify_update()
         except asyncio.CancelledError:
             _LOGGER.debug("Receive loop cancelled")
-        finally:
-            await self.client.close()
+        except Exception as e:
+            _LOGGER.error("Receive loop error: %s", e)
 
     def _notify_update(self) -> None:
         """Notify all entities of new data."""
@@ -160,43 +192,58 @@ class VentAxiaCoordinator:
             callback()
 
     def add_update_callback(self, callback: Callable[[], None]) -> None:
-        """Add a callback for data updates."""
-        self._callbacks.append(callback)
+        """Register entity listener."""
+        self._callbacks.add(callback)
+        self._listener_count += 1
+
+        if self._listener_count == 1:
+            # First listener → start connection
+            self.hass.async_create_task(self.ensure_connection())
 
     def remove_update_callback(self, callback: Callable[[], None]) -> None:
-        """Remove a callback for data updates."""
-        self._callbacks.remove(callback)
+        """Remove entity listener."""
+        if callback in self._callbacks:
+            self._callbacks.discard(callback)
+            self._listener_count -= 1
+
+        if self._listener_count == 0:
+            self.hass.async_create_task(self._close_connection())
 
     async def async_stop(self) -> None:
         """Stop the coordinator."""
+        if self._pending_close_task:
+            self._pending_close_task.cancel()
+            try:
+                await self._pending_close_task
+            except asyncio.CancelledError:
+                pass  # avoid crashing unload
+
         if self._receive_task:
             self._receive_task.cancel()
             try:
                 await self._receive_task
             except asyncio.CancelledError:
                 pass  # avoid crashing unload
+        await self._close_connection()
 
     async def _handle_disconnect(self):
-        _LOGGER.warning("VentAxia connection lost. Attempting to reconnect...")
+        """Handle unexpected socket disconnect."""
+        if self._connected:
+            _LOGGER.warning("VentAxia connection lost")
         self._connected = False
 
-        if not self.client._closing:
-            await self.client.close()  # Ensure cleanup
-        else:
-            _LOGGER.debug("Client is already closing, skipping second close()")
+    async def _close_connection(self):
+        """Close TCP connection."""
+        if not self._connected:
+            return
 
-        for attempt in range(5):  # Try reconnect 5 times
-            try:
-                await self.client.connect()
-                self._connected = True  # Reset on successful connect
-                self._receive_task = asyncio.create_task(self._receive_loop())
-                _LOGGER.info("VentAxia reconnected successfully.")
-                return
-            except Exception as e:
-                _LOGGER.warning(f"Reconnect attempt {attempt + 1} failed: {e}")
-                await asyncio.sleep(10)
+        _LOGGER.debug("Closing VentAxia connection (no listeners)")
 
-        _LOGGER.error("Failed to reconnect after multiple attempts.")
+        try:
+            await self.client.close()
+        finally:
+            self._connected = False
+            self._receive_task = None
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -204,6 +251,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = VentAxiaCoordinator(hass, entry)
     try:
         await coordinator.async_start()
+
     except Exception as ex:
         raise ConfigEntryNotReady from ex
 
@@ -230,17 +278,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
 
         data_to_send = {}
+        delete_flag = call.data.get("delete", False)
 
         # Helper function to handle encoding and sending
         if decoded and (name := decoded.get("name")):
-            val = schedules.encode_ts_field(decoded)  # ✅decode→int
+
+            if delete_flag:
+                val = 0  # send 0 to device
+            else:
+                val = schedules.encode_ts_field(decoded)  # ✅decode→int
 
             if name == "shrs":
                 schedules.shrs_raw = val  # keep raw
                 schedules.silent_hours_decoded = decoded  # keep decoded
             else:  # ts
-                schedules.ts_raw[name] = val  # keep raw
-                schedules.ts_decoded[name] = decoded  # keep decoded
+                if delete_flag:
+                    schedules.ts_raw.pop(name, None)
+                    schedules.ts_decoded.pop(name, None)
+                else:
+                    schedules.ts_raw[name] = val
+                    schedules.ts_decoded[name] = decoded
             data_to_send[name] = val
 
         if data_to_send:

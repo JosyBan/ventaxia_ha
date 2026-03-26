@@ -70,6 +70,12 @@ update_schedule_or_silent_hours:
       required: true
       selector:
         text:
+    delete:
+      name: Delete
+      description: Optional. Set to true to delete this schedule.
+      required: false
+      selector:
+        boolean: {}
 set_summer_bypass:
   name: Set Summer Bypass
   description: Update summer bypass mode, AF mode, and temperatures.
