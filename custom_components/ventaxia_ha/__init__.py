@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Callable, Dict, Optional
 
 import voluptuous as vol
+from homeassistant.components.frontend import add_extra_js_url
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -256,6 +259,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady from ex
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+
+    if not hass.data.get("ventaxia_card_loaded"):
+        hass.data["ventaxia_card_loaded"] = True
+
+    path = os.path.join(os.path.dirname(__file__), "www", "ventaxia-card.js")
+
+    await hass.http.async_register_static_paths(
+        [
+            StaticPathConfig(
+                url_path="/ventaxia-card.js",
+                path=path,
+                cache_headers=False,
+            )
+        ]
+    )
+
+    add_extra_js_url(hass, "/ventaxia-card.js")
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
