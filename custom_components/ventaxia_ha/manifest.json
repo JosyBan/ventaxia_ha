@@ -3,7 +3,7 @@
   "name": "Vent Axia",
   "codeowners": ["@JosyBan"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["http"],
   "documentation": "https://github.com/JosyBan/ventaxia_ha",
   "integration_type": "device",
   "iot_class": "local_push",
