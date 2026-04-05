@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
+from pathlib import Path
 from typing import Callable, Dict, Optional
 
 import voluptuous as vol
@@ -249,6 +249,34 @@ class VentAxiaCoordinator:
             self._receive_task = None
 
 
+async def async_setup(hass: HomeAssistant, config: dict):
+    """Early setup so the frontend knows about our JS before dashboards load."""
+
+    if not hass.data.get("ventaxia_card_loaded"):
+        hass.data["ventaxia_card_loaded"] = True
+
+        # Get integration version from manifest.json
+        integration = hass.data["integrations"].get("ventaxia_ha")
+        version = integration.version if integration else "unknown"
+
+        www_path = Path(__file__).parent / "www"
+
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    url_path="/ventaxia_ha",
+                    path=str(www_path),
+                    cache_headers=False,
+                )
+            ]
+        )
+
+        # Tell the frontend to load the JS file
+        add_extra_js_url(hass, f"/ventaxia_ha/ventaxia-card.js?v={version}")
+
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up VentAxia from a config entry."""
     coordinator = VentAxiaCoordinator(hass, entry)
@@ -259,23 +287,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady from ex
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-
-    if not hass.data.get("ventaxia_card_loaded"):
-        hass.data["ventaxia_card_loaded"] = True
-
-    path = os.path.join(os.path.dirname(__file__), "www", "ventaxia-card.js")
-
-    await hass.http.async_register_static_paths(
-        [
-            StaticPathConfig(
-                url_path="/ventaxia-card.js",
-                path=path,
-                cache_headers=False,
-            )
-        ]
-    )
-
-    add_extra_js_url(hass, "/ventaxia-card.js")
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

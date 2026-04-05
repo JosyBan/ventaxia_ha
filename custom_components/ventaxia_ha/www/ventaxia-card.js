@@ -1,3 +1,11 @@
+const VERSION = new URL(import.meta.url).searchParams.get("v") || "unknown";
+
+console.info(
+  `%c VENTAXIA-CARD %c ${VERSION} `,
+  "color: white; background: #0077cc; padding: 2px 4px; border-radius: 3px 0 0 3px;",
+  "color: white; background: #00aa88; padding: 2px 4px; border-radius: 0 3px 3px 0;",
+);
+
 class VentAxiaCard extends HTMLElement {
   constructor() {
     super();
@@ -1144,3 +1152,11 @@ class VentAxiaCard extends HTMLElement {
 }
 
 customElements.define("ventaxia-card", VentAxiaCard);
+
+// THIS FIXES THE RACE CONDITION
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: "ventaxia-card",
+  name: "VentAxia Card",
+  description: "VentAxia MVHR control card",
+});
