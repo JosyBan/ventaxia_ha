@@ -1,18 +1,25 @@
 # File: ventaxia_ha/__init__.py
-"""The VentAxia IoT integration."""
+"""The VentAxia HA integration."""
 from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 from typing import Callable, Dict, Optional
 
 import voluptuous as vol
-from homeassistant.components.frontend import add_extra_js_url
-from homeassistant.components.http import StaticPathConfig
+from homeassistant.components import websocket_api
+from homeassistant.components.websocket_api import (
+    ActiveConnection,
+    async_register_command,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import (
+    EVENT_HOMEASSISTANT_STARTED,
+    CoreState,
+    HomeAssistant,
+    ServiceCall,
+)
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.device_registry import DeviceInfo
 from ventaxiaiot import (
@@ -30,6 +37,7 @@ from .const import (
     CONF_PSK_KEY,
     CONF_WIFI_DEVICE_ID,
     DOMAIN,
+    INTEGRATION_VERSION,
     SERVICE_SET_AIRFLOW_MODE,
     SERVICE_SET_SCHEDULE,
     SERVICE_SET_SUMMER_BYPASS,
@@ -38,6 +46,7 @@ from .const import (
     VALID_DURATIONS,
     VALID_MODES,
 )
+from .frontend import JSModuleRegistration
 from .runtime_timer import VentAxiaRuntimeTimer
 
 _LOGGER = logging.getLogger(__name__)
@@ -50,6 +59,31 @@ SERVICE_SET_AIRFLOW_MODE_SCHEMA = vol.Schema(
         vol.Required("duration"): vol.In(VALID_DURATIONS),
     }
 )
+
+
+async def async_register_frontend(hass: HomeAssistant) -> None:
+    """Register frontend modules after HA startup."""
+    module_register = JSModuleRegistration(hass)
+    await module_register.async_register()
+
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): f"{DOMAIN}/version",
+        }
+    )
+    @websocket_api.async_response
+    async def websocket_get_version(
+        hass: HomeAssistant,
+        connection: ActiveConnection,
+        msg: dict,
+    ) -> None:
+        """Handle version request from frontend."""
+        connection.send_result(
+            msg["id"],
+            {"version": INTEGRATION_VERSION},
+        )
+
+    async_register_command(hass, websocket_get_version)
 
 
 def validate_days(value: str) -> str:
@@ -249,30 +283,15 @@ class VentAxiaCoordinator:
             self._receive_task = None
 
 
-async def async_setup(hass: HomeAssistant, config: dict):
-    """Early setup so the frontend knows about our JS before dashboards load."""
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    async def _setup_frontend(_event=None) -> None:
+        module_register = JSModuleRegistration(hass)
+        await module_register.async_register()
 
-    if not hass.data.get("ventaxia_card_loaded"):
-        hass.data["ventaxia_card_loaded"] = True
-
-        # Get integration version from manifest.json
-        integration = hass.data["integrations"].get("ventaxia_ha")
-        version = integration.version if integration else "unknown"
-
-        www_path = Path(__file__).parent / "www"
-
-        await hass.http.async_register_static_paths(
-            [
-                StaticPathConfig(
-                    url_path="/ventaxia_ha",
-                    path=str(www_path),
-                    cache_headers=False,
-                )
-            ]
-        )
-
-        # Tell the frontend to load the JS file
-        add_extra_js_url(hass, f"/ventaxia_ha/ventaxia-card.js?v={version}")
+    if hass.state == CoreState.running:
+        await _setup_frontend()
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _setup_frontend)
 
     return True
 

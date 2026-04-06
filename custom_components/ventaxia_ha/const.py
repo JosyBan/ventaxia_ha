@@ -1,7 +1,28 @@
 # File: ventaxia_ha/const.py
 """Constants for the VentAxia IoT integration."""
 
-DOMAIN = "ventaxia_ha"
+import json
+from pathlib import Path
+from typing import Final
+
+MANIFEST_PATH = Path(__file__).parent / "manifest.json"
+with open(MANIFEST_PATH, encoding="utf-8") as f:
+    INTEGRATION_VERSION: Final[str] = json.load(f).get("version", "0.0.0")
+
+
+DOMAIN: Final[str] = "ventaxia_ha"
+
+# Base URL for frontend resources
+URL_BASE: Final[str] = "/ventaxia_ha"
+
+# List of JavaScript modules to register
+JSMODULES: Final[list[dict[str, str]]] = [
+    {
+        "name": "Ventaxia Card",
+        "filename": "ventaxia-card.js",
+        "version": INTEGRATION_VERSION,
+    },
+]
 
 # Configuration keys
 CONF_HOST = "host"
@@ -21,7 +42,6 @@ AIRFLOW_MODES = {
     "boost": 3,
     "purge": 4,
 }
-
 
 VALID_DURATIONS = ["0", "15", "30", "45", "60"]
 # Service names
