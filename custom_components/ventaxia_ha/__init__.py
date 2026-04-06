@@ -8,10 +8,7 @@ from typing import Callable, Dict, Optional
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
-from homeassistant.components.websocket_api import (
-    ActiveConnection,
-    async_register_command,
-)
+from homeassistant.components.websocket_api.connection import ActiveConnection
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import (
@@ -59,31 +56,6 @@ SERVICE_SET_AIRFLOW_MODE_SCHEMA = vol.Schema(
         vol.Required("duration"): vol.In(VALID_DURATIONS),
     }
 )
-
-
-async def async_register_frontend(hass: HomeAssistant) -> None:
-    """Register frontend modules after HA startup."""
-    module_register = JSModuleRegistration(hass)
-    await module_register.async_register()
-
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): f"{DOMAIN}/version",
-        }
-    )
-    @websocket_api.async_response
-    async def websocket_get_version(
-        hass: HomeAssistant,
-        connection: ActiveConnection,
-        msg: dict,
-    ) -> None:
-        """Handle version request from frontend."""
-        connection.send_result(
-            msg["id"],
-            {"version": INTEGRATION_VERSION},
-        )
-
-    async_register_command(hass, websocket_get_version)
 
 
 def validate_days(value: str) -> str:
@@ -283,10 +255,37 @@ class VentAxiaCoordinator:
             self._receive_task = None
 
 
+async def async_register_frontend(hass: HomeAssistant) -> None:
+    """Register frontend modules after HA startup."""
+    module_register = JSModuleRegistration(hass)
+    await module_register.async_register()
+
+
+@websocket_api.decorators.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/version",
+    }
+)
+@websocket_api.decorators.async_response
+async def websocket_get_version(
+    hass: HomeAssistant,
+    connection: ActiveConnection,
+    msg: dict,
+) -> None:
+    """Handle version request from frontend."""
+    connection.send_result(
+        msg["id"],
+        {"version": INTEGRATION_VERSION},
+    )
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+
+    # Register websocket command for version checking
+    websocket_api.async_register_command(hass, websocket_get_version)
+
     async def _setup_frontend(_event=None) -> None:
-        module_register = JSModuleRegistration(hass)
-        await module_register.async_register()
+        await async_register_frontend(hass)
 
     if hass.state == CoreState.running:
         await _setup_frontend()
