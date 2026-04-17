@@ -4,6 +4,10 @@ on:
     branches:
       - main
       - master
+
+permissions:
+  contents: write
+  
 jobs:
   draft_release:
     name: Release Drafter
