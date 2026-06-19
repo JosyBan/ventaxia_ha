@@ -14,7 +14,7 @@ jobs:
       issues: write # <--- This grants write access to issues, including labels
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Run Labeler
         uses: crazy-max/ghaction-github-labeler@v6
