@@ -1,5 +1,22 @@
 const VERSION = new URL(import.meta.url).searchParams.get("v") || "unknown";
 
+const ENTITY_KEYS = [
+  "airflow_active",
+  "manual_airflow_timer",
+  "airflow_mode",
+  "schedules",
+  "silent_hours",
+  "summer_bypass_mode",
+  "summer_bypass_indoor_temp",
+  "summer_bypass_outdoor_temp",
+  "summer_bypass_airflow_mode",
+  "filter_months_remaining",
+  "service_info",
+  "outdoor_temperature",
+  "indoor_temperature",
+  "supply_air_temperature",
+];
+
 console.info(
   `%c VENTAXIA-CARD %c ${VERSION} `,
   "color: white; background: #0077cc; padding: 2px 4px; border-radius: 3px 0 0 3px;",
@@ -16,21 +33,75 @@ class VentAxiaCard extends HTMLElement {
 
   setConfig(config) {
     this.config = config;
+    this._entityIds = null; // re-resolve if device_id changed
     this.render();
 
-    if (!this._listenersInitialized) {
-      this.setupListeners();
-      this._listenersInitialized = true;
+    this.setupListeners();
+    if (this._hass) this.hass = this._hass; // repopulate the fresh DOM
+  }
+
+  _ent(key) {
+    // falls back to the old hardcoded id if no device_id / not loaded yet
+    const id = this._entityIds?.[key] ?? `sensor.${key}`;
+    return this._hass?.states[id];
+  }
+
+  async _loadEntityMap() {
+    if (
+      this._entityIds ||
+      this._loadingIds ||
+      !this.config?.device_id ||
+      !this._hass
+    )
+      return;
+    this._loadingIds = true;
+    try {
+      const reg = await this._hass.callWS({
+        type: "config/entity_registry/list",
+      });
+      const slug = (s) =>
+        (s || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "_")
+          .replace(/^_+|_+$/g, "");
+
+      const mine = reg.filter(
+        (e) =>
+          e.device_id === this.config.device_id &&
+          e.entity_id.startsWith("sensor."),
+      );
+
+      const map = {};
+      for (const key of ENTITY_KEYS) {
+        // 1) exact match on the integration's original name (survives entity_id renames)
+        let hit = mine.find((e) => slug(e.original_name) === key);
+        // 2) fallback: unique_id ends with key (shortest wins, so "airflow_mode"
+        //    doesn't grab "summer_bypass_airflow_mode")
+        if (!hit) {
+          hit = mine
+            .filter((e) => slug(e.unique_id).endsWith(key))
+            .sort((a, b) => a.unique_id.length - b.unique_id.length)[0];
+        }
+        if (hit) map[key] = hit.entity_id;
+        else console.warn(`VentAxiaCard: no entity found for "${key}"`);
+      }
+      this._entityIds = map;
+      this.hass = this._hass; // re-run the setter with the resolved ids
+    } catch (err) {
+      console.error("VentAxiaCard: entity registry lookup failed", err);
+      this._entityIds = {}; // fall back to default sensor.<key> ids
+    } finally {
+      this._loadingIds = false;
     }
   }
 
   set hass(hass) {
     this._hass = hass;
 
-    const activeEntity = hass.states["sensor.airflow_active"];
-    const timerEntity = hass.states["sensor.manual_airflow_timer"];
+    const activeEntity = this._ent("airflow_active");
+    const timerEntity = this._ent("manual_airflow_timer");
     // Update the device mode heading from sensor
-    const modeEntity = hass.states["sensor.airflow_mode"];
+    const modeEntity = this._ent("airflow_mode");
 
     // You could similarly update other dynamic fields here later
     if (this.currentModeHeading && modeEntity) {
@@ -146,7 +217,7 @@ class VentAxiaCard extends HTMLElement {
   renderSchedules() {
     if (!this._hass) return;
 
-    const scheduleSensor = this._hass.states["sensor.schedules"];
+    const scheduleSensor = this._ent("schedules");
     if (!scheduleSensor?.attributes) return;
     // Clear the current list
     this.scheduleList.innerHTML = "";
@@ -164,7 +235,7 @@ class VentAxiaCard extends HTMLElement {
   updateSilentHours() {
     if (!this._hass) return;
 
-    const silentSensor = this._hass.states["sensor.silent_hours"];
+    const silentSensor = this._ent("silent_hours");
     if (!silentSensor?.attributes) return;
 
     this.silentRow.innerHTML = ""; // clear existing row(s)
@@ -175,13 +246,10 @@ class VentAxiaCard extends HTMLElement {
   updateSummerBypass() {
     if (!this._hass) return;
 
-    const bypassModeSensor = this._hass.states["sensor.summer_bypass_mode"];
-    const summerIndoorTempSensor =
-      this._hass.states["sensor.summer_bypass_indoor_temp"];
-    const summerOutdoorTempSensor =
-      this._hass.states["sensor.summer_bypass_outdoor_temp"];
-    const summerBypassAFModeSensor =
-      this._hass.states["sensor.summer_bypass_airflow_mode"];
+    const bypassModeSensor = this._ent("summer_bypass_mode");
+    const summerIndoorTempSensor = this._ent("summer_bypass_indoor_temp");
+    const summerOutdoorTempSensor = this._ent("summer_bypass_outdoor_temp");
+    const summerBypassAFModeSensor = this._ent("summer_bypass_airflow_mode");
 
     if (
       !bypassModeSensor?.state ||
@@ -199,7 +267,7 @@ class VentAxiaCard extends HTMLElement {
       from: `Indoor ${summerIndoorTempSensor.state} °C`, // indoor temperature
       to: " ", // empty as createRow will only reder from for key summer
       mode: `${bypassModeSensor.state}`, // bypass mode
-      days: `Indoor ${summerOutdoorTempSensor.state} °C`, // outdoor temperature
+      days: `Outdoor ${summerOutdoorTempSensor.state} °C`, // outdoor temperature
       summerIndoorTempRaw: summerIndoorTempSensor.state,
       bypassmodeRaw: bypassModeSensor.state,
       afModeRaw: summerBypassAFModeSensor.state,
@@ -212,13 +280,13 @@ class VentAxiaCard extends HTMLElement {
   // Called when HA state changes or on first render
   updateMaintenanceView() {
     // Filter months remaining
-    const filterValue = this._hass.states["sensor.filter_months_remaining"];
+    const filterValue = this._ent("filter_months_remaining");
     if (filterValue) {
       this.filterValue.textContent = filterValue.state;
     }
 
     // Service info
-    const serviceValue = this._hass.states["sensor.service_info"];
+    const serviceValue = this._ent("service_info");
     if (serviceValue) {
       this.serviceValue.textContent = serviceValue.state;
     }
@@ -227,18 +295,18 @@ class VentAxiaCard extends HTMLElement {
   // Called when HA state changes or on first render
   updatePreformanceView() {
     // Update the outdoor temperature display
-    const outdoor = this._hass.states["sensor.outdoor_temperature"];
+    const outdoor = this._ent("outdoor_temperature");
     if (outdoor) {
       this.outdoorTempValue.textContent = `${outdoor.state} °C`;
     }
 
     // Update the indoor temperature display
-    const extract = this._hass.states["sensor.indoor_temperature"];
+    const extract = this._ent("indoor_temperature");
     if (extract) {
       this.extractTempValue.textContent = `${extract.state} °C`;
     }
     // Update the supply temperature display
-    const supply = this._hass.states["sensor.supply_air_temperature"];
+    const supply = this._ent("supply_air_temperature");
     if (supply) {
       this.supplyTempValue.textContent = `${supply.state} °C`;
     }
@@ -470,8 +538,9 @@ class VentAxiaCard extends HTMLElement {
 			.modal-actions .btn.delete:hover { background:#f87171; }
 			.modal-actions .btn.save { background:#3b82f6; color:#fff; }
 			.modal-actions .btn.save:hover { background:#60a5fa; } input[type="time"] { font-size:16px; padding:5px; border-radius:6px; border:1px solid #ccc; width:100px; cursor:pointer; } input[type="time"]:focus { outline:none; border-color:#3b82f6; box-shadow:0 0 0 2px rgba(59,130,246,0.3); }
-			.modal-mode-select {width: 100%;font-size: 16px;padding: 5px;border-radius: 6px;border: 1px solid #ccc;cursor: pointer;height: 28.4px;box-sizing: border-box;}
-			.modal-mode-select:focus {outline: none;border-color: #3b82f6;box-shadow: 0 0 0 2px rgba(59,130,246,0.3);}
+			.modal-mode-select, .bypass-group {width: 100%;font-size: 16px;padding: 5px;border-radius: 6px;border: 1px solid #ccc;cursor: pointer;height: 28.4px;box-sizing: border-box;}
+			.indoor-group, .outdoor-group {width: 100%;font-size: 16px;padding: 5px;border-radius: 6px;border: 1px solid #ccc;height: 28.4px;box-sizing: border-box;}
+      .modal-mode-select:focus, .bypass-group:focus, .indoor-group:focus, .outdoor-group:focus {outline: none;border-color: #3b82f6;box-shadow: 0 0 0 2px rgba(59,130,246,0.3);}
 		</style>
 
 		<div class="card" id="ventaxia-card">
@@ -538,9 +607,9 @@ class VentAxiaCard extends HTMLElement {
 							<button id="close-button" class="close-modal">&times;</button>
 							<h2 id="modal-title">Edit Schedule</h2>
 							<div class="schedule-details" style="display:grid; grid-template-columns: auto 1fr; row-gap: 0.5rem; column-gap: 1rem; align-items:center;">
-								<label class="bypass-group">Bypass Mode</label><select class="bypass-group" id="modal-bypass-mode" ></select>
-								<label class="indoor-group">Intdoor Temp</label><input class="indoor-group" id="modal-indoor-temp" >
-								<label class="outdoor-group">Outdoor Temp</label><input class="outdoor-group" id="modal-outdoor-temp" >
+								<label class="bypass-lablel">Bypass Mode</label><select class="bypass-group" id="modal-bypass-mode" ></select>
+								<label class="bypass-lablel">Indoor Temp</label><input class="indoor-group" id="modal-indoor-temp" >
+								<label class="bypass-lablel">Outdoor Temp</label><input class="outdoor-group" id="modal-outdoor-temp" >
 								<label>Mode</label><select id="modal-mode" class="modal-mode-select"></select>
 								<label class="from-group">From</label><input class="from-group" id="modal-from" type="time">
 								<label class="to-group">To</label><input class="to-group" id="modal-to" type="time">
@@ -856,7 +925,12 @@ class VentAxiaCard extends HTMLElement {
         modal.querySelector("#modal-outdoor-temp").value =
           data.summerOutdoorTempRaw;
         modalTitle.textContent = "Edit Summer Bypass";
-        showFields(".indoor-group", ".outdoor-group", ".bypass-group");
+        showFields(
+          ".indoor-group",
+          ".outdoor-group",
+          ".bypass-group",
+          ".bypass-lablel",
+        );
         hideFields(".from-group", ".to-group", ".days-group", ".delete-group");
       } else {
         modal.querySelector("#modal-from").value = data.from;
@@ -873,6 +947,7 @@ class VentAxiaCard extends HTMLElement {
           ".indoor-group",
           ".outdoor-group",
           ".bypass-group",
+          ".bypass-lablel",
           ...(key === "shrs" ? [".delete-group"] : []),
         );
 
@@ -971,13 +1046,13 @@ class VentAxiaCard extends HTMLElement {
       if (!row) return;
 
       const key = row.dataset.key;
-      const schedules = this._hass.states["sensor.schedules"].attributes;
+      const schedules = this._ent("schedules")?.attributes;
       const ts = schedules[key];
       showModal(ts, key);
     });
 
     addScheduleBtn.addEventListener("click", () => {
-      const schedules = this._hass.states["sensor.schedules"]?.attributes || {};
+      const schedules = this._ent("schedules")?.attributes || {};
 
       // Get numeric parts of existing ts keys
       const existingNumbers = Object.keys(schedules)
@@ -1006,7 +1081,7 @@ class VentAxiaCard extends HTMLElement {
 
     // --- Silent Hours click ---
     this.silentHoursClick.addEventListener("click", () => {
-      const sh = this._hass.states["sensor.silent_hours"].attributes;
+      const sh = this._ent("silent_hours")?.attributes;
       showModal(sh, "shrs");
     });
 
