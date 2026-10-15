@@ -86,7 +86,11 @@ SERVICE_SET_SUMMER_BYPASS_SCHEMA = vol.Schema(
 
 
 class VentAxiaCoordinator:
-    """Coordinator for VentAxia IoT device."""
+    """Coordinator that maintains a persistent VentAxia connection."""
+
+    CONNECTION_LIFETIME = 30 * 60
+    RECONNECT_DELAY = 10.0
+    CONNECT_TIMEOUT = 30.0
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the coordinator."""
@@ -94,14 +98,15 @@ class VentAxiaCoordinator:
         self.entry = entry
         self.data = entry.data
         self.manual_airflow_timer: VentAxiaRuntimeTimer | None = None
-        self._connected = False  # Track connection state
+        self._connected = False
         self._conn_lock = asyncio.Lock()
-        self._last_disconnect: float | None = None
-        self.MIN_RECONNECT_GAP = 30.0
+        self._stopping = False
+        self._supervisor_task: asyncio.Task | None = None
+        self._receive_task: asyncio.Task | None = None
+        self._connection_lost = asyncio.Event()
         self.commission_mode = "normal"
-        self._listener_count = 0
+        self._callbacks: set[Callable[[], None]] = set()
 
-        # Initialize connection components
         self.pending_tracker = PendingRequestTracker()
         self.client = AsyncNativePskClient(
             wifi_device_id=self.data[CONF_WIFI_DEVICE_ID],
@@ -115,11 +120,7 @@ class VentAxiaCoordinator:
         self.commands = VentClientCommands(
             self.client.wifi_device_id, self.pending_tracker
         )
-
         self.device = self.processor.device
-        self._receive_task: asyncio.Task | None = None
-        self._callbacks: set[Callable[[], None]] = set()
-        self._pending_close_task: asyncio.Task | None = None
 
     @property
     def device_info(self) -> DeviceInfo | None:
@@ -134,168 +135,162 @@ class VentAxiaCoordinator:
 
     @property
     def available(self) -> bool:
+        """Return whether the device connection is active."""
         return self._connected
 
     async def async_send_airflow_mode(self, mode: str, duration: int) -> None:
-        """Send airflow mode command to the device."""
         await self.ensure_connection()
         await self.commands.send_airflow_mode_request(self.client, mode, duration)
-        self.hass.async_create_task(self._service_close_guard())
 
     async def async_start_commissioning(self, airflow="normal") -> None:
-        """Send start_commissioning command to the device."""
         await self.ensure_connection()
         await self.commands.start_commissioning(self.client, airflow)
-        self.hass.async_create_task(self._service_close_guard())
 
     async def async_stop_commissioning(self) -> None:
-        """Send stop_commissioning command to the device."""
         await self.ensure_connection()
         await self.commands.stop_commissioning(self.client)
-        self.hass.async_create_task(self._service_close_guard())
 
     async def async_send_update(self, data: dict, topic: str = "ee") -> None:
-        """Send update command to the device."""
         await self.ensure_connection()
         await self.commands.send_update_request(self.client, data, topic)
-        self.hass.async_create_task(self._service_close_guard())
 
     async def async_start(self) -> None:
-        """Start the message receive loop."""
-        self._connected = False
+        """Start the background connection supervisor."""
+        self._stopping = False
+        if self._supervisor_task is None or self._supervisor_task.done():
+            self._supervisor_task = self.hass.async_create_task(
+                self._connection_supervisor(),
+                name="ventaxia_connection_supervisor",
+            )
 
-    async def ensure_connection(self):
-        """Ensure TCP connection exists."""
+    async def ensure_connection(self) -> None:
+        """Ensure a connection exists, serializing connection attempts."""
         async with self._conn_lock:
-            if self._connected:
+            if self._stopping:
+                raise ConnectionError("VentAxia integration is stopping")
+            if self._connected and self.client.writer is not None:
                 return
 
-            if self._last_disconnect is not None:
-                wait = self.MIN_RECONNECT_GAP - (
-                    self.hass.loop.time() - self._last_disconnect
-                )
-                if wait > 0:
-                    _LOGGER.debug("Waiting %.1fs before reconnecting", wait)
-                    await asyncio.sleep(wait)
-                    if self._connected:
-                        return
+            _LOGGER.debug(
+                "Connecting to VentAxia device at %s:%s",
+                self.data[CONF_HOST],
+                self.data[CONF_PORT],
+            )
+            self._connection_lost.clear()
+            try:
+                await self.client.connect(timeout=self.CONNECT_TIMEOUT)
+            except Exception:
+                self._connected = False
+                self._connection_lost.set()
+                raise
 
-            _LOGGER.debug("Opening VentAxia TCP connection")
-            await self.client.connect()
             self._connected = True
-            self._last_disconnect = None
+            if self._receive_task is None or self._receive_task.done():
+                self._receive_task = self.hass.async_create_task(
+                    self._receive_loop(), name="ventaxia_receive_loop"
+                )
+            _LOGGER.info("Connected to VentAxia device")
 
-            if not self._receive_task or self._receive_task.done():
-                self._receive_task = asyncio.create_task(self._receive_loop())
+    async def _connection_supervisor(self) -> None:
+        """Keep sensor data flowing and retry failed connections."""
+        while not self._stopping:
+            try:
+                await self.ensure_connection()
+                # Keep a successful session for up to 30 minutes. A disconnect
+                # signals the event earlier and triggers the same reconnect path.
+                try:
+                    await asyncio.wait_for(
+                        self._connection_lost.wait(),
+                        timeout=self.CONNECTION_LIFETIME,
+                    )
+                except asyncio.TimeoutError:
+                    _LOGGER.info(
+                        "VentAxia session reached 30-minute limit; reconnecting"
+                    )
+                if self._stopping:
+                    break
+                await self._close_connection()
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                _LOGGER.warning("VentAxia connection failed: %s", err)
 
-    async def _service_close_guard(self, delay: float = 10.0):
-        if self._pending_close_task and not self._pending_close_task.done():
-            return  # Already scheduled
-        self._pending_close_task = asyncio.create_task(self._delayed_close(delay))
-
-    async def _delayed_close(self, delay: float):
-        """Delay closing connection to avoid racing service calls."""
-        try:
-            await asyncio.sleep(delay)
-        except asyncio.CancelledError:
-            raise
-
-        if self._listener_count == 0:
-            await self._close_connection()
-
-        self._pending_close_task = None
+            if not self._stopping:
+                _LOGGER.debug(
+                    "Retrying VentAxia connection in %.0f seconds",
+                    self.RECONNECT_DELAY,
+                )
+                try:
+                    await asyncio.sleep(self.RECONNECT_DELAY)
+                except asyncio.CancelledError:
+                    raise
 
     async def _receive_loop(self) -> None:
-        """Receive loop task."""
+        """Process incoming messages until the client connection ends."""
         try:
             async for msg in self.client:
                 await self.processor.process(msg)
                 self._notify_update()
         except asyncio.CancelledError:
-            _LOGGER.debug("Receive loop cancelled")
-        except Exception as e:
-            _LOGGER.error("Receive loop error: %s", e)
+            raise
+        except Exception:
+            _LOGGER.exception("VentAxia receive loop failed")
+        finally:
+            if not self._stopping and self._connected and not self.client._running:
+                self._connected = False
+                self._connection_lost.set()
+
+    async def _handle_disconnect(self) -> None:
+        """Signal the supervisor when the socket drops unexpectedly."""
+        if self._connected:
+            _LOGGER.warning("VentAxia connection lost")
+        self._connected = False
+        self._connection_lost.set()
+
+    async def _close_connection(self) -> None:
+        """Close the client and stop the associated receive loop."""
+        async with self._conn_lock:
+            self._connected = False
+            task = self._receive_task
+            self._receive_task = None
+            if task and task is not asyncio.current_task() and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    _LOGGER.debug("Receive task ended during close", exc_info=True)
+            try:
+                await self.client.close()
+            except Exception:
+                _LOGGER.warning("Error closing VentAxia client", exc_info=True)
+            self._connection_lost.set()
 
     def _notify_update(self) -> None:
-        """Notify all entities of new data."""
-        for callback in self._callbacks:
+        """Notify registered entities that new data is available."""
+        for callback in tuple(self._callbacks):
             callback()
 
     def add_update_callback(self, callback: Callable[[], None]) -> None:
-        """Register entity listener."""
+        """Register an entity update callback."""
         self._callbacks.add(callback)
-        self._listener_count += 1
-
-        if self._pending_close_task and not self._pending_close_task.done():
-            self._pending_close_task.cancel()
-            self._pending_close_task = None
-
-        if self._listener_count == 1:
-            # First listener → start connection
-            self.hass.async_create_task(self.ensure_connection())
 
     def remove_update_callback(self, callback: Callable[[], None]) -> None:
-        """Remove entity listener."""
-        if callback in self._callbacks:
-            self._callbacks.discard(callback)
-            self._listener_count -= 1
-
-        if self._listener_count == 0:
-            self.hass.async_create_task(self._service_close_guard(delay=10.0))
+        """Unregister an entity update callback."""
+        self._callbacks.discard(callback)
 
     async def async_stop(self) -> None:
-        """Stop the coordinator."""
-        if self._pending_close_task:
-            self._pending_close_task.cancel()
+        """Stop the supervisor and close the connection on unload."""
+        self._stopping = True
+        if self._supervisor_task and not self._supervisor_task.done():
+            self._supervisor_task.cancel()
             try:
-                await self._pending_close_task
-            except asyncio.CancelledError:
-                pass  # avoid crashing unload
-
-        if self._receive_task:
-            self._receive_task.cancel()
-            try:
-                await self._receive_task
-            except asyncio.CancelledError:
-                pass  # avoid crashing unload
-        await self._close_connection()
-
-    async def _handle_disconnect(self):
-        """Handle unexpected socket disconnect."""
-        if self._connected or self._receive_task is not None:
-            _LOGGER.warning("VentAxia connection lost")
-        self._connected = False
-        self._last_disconnect = self.hass.loop.time()
-
-        if self._receive_task and not self._receive_task.done():
-            self._receive_task.cancel()
-            try:
-                await self._receive_task
+                await self._supervisor_task
             except asyncio.CancelledError:
                 pass
-        self._receive_task = None
-
-    async def _close_connection(self):
-        """Close TCP connection."""
-        async with self._conn_lock:
-            if not self._connected and not self._receive_task:
-                return
-
-            _LOGGER.debug("Closing VentAxia connection (no listeners)")
-
-            if self._receive_task and not self._receive_task.done():
-                self._receive_task.cancel()
-                try:
-                    await self._receive_task
-                except asyncio.CancelledError:
-                    pass
-
-            try:
-                await self.client.close()
-            finally:
-                self._connected = False
-                self._last_disconnect = self.hass.loop.time()
-                self._receive_task = None
+        self._supervisor_task = None
+        await self._close_connection()
 
 
 async def async_register_frontend(hass: HomeAssistant) -> None:
