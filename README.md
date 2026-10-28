@@ -25,7 +25,7 @@ This integration relies on the [ventaxiaiot python library](https://github.com/J
 | `service`     | Add a service to update the airflow                                       |
 | Lovelace card | A dashboard card to monitor and control the unit ([details](doc/card.md)) |
 
-![example][logo]
+<img src="./logo@2x.png" width="600" />
 
 ## HACS Installation
 
