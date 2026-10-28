@@ -23,7 +23,7 @@ This integration relies on the [ventaxiaiot python library](https://github.com/J
 | `sensor`      | Provides various readings for your Ventaxia device                        |
 | `button`      | Run some of the airflow commands                                          |
 | `service`     | Add a service to update the airflow                                       |
-| Lovelace card | A dashboard card to monitor and control the unit ([details](doc/CARD.md)) |
+| Lovelace card | A dashboard card to monitor and control the unit ([details](doc/card.md)) |
 
 ![example][logo]
 
