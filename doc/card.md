@@ -117,6 +117,6 @@ For anything else, please [open an issue](https://github.com/JosyBan/ventaxia_ha
 
 ---
 
-[Status]: \images\Screenshot1.png
-[Performance]: \images\Screenshot2.png
-[Maintenance]: \images\Screenshots3.png
+[Status]: images/Screenshot1.png
+[Performance]: images/Screenshot2.png
+[Maintenance]: images/Screenshots3.png
