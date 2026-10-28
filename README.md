@@ -69,7 +69,7 @@ After installation and restarting Home Assistant, you can configure the Ventaxia
 
         Deice ID: This is the WIFI SSID of the device (see example image)
 
-![example|50%][module]
+![example|25%][module]
 
 Once successfully configured, the integration will automatically discover and create relevant sensor entities. You can find the full list of available entities under Settings > Devices & Services > Ventaxia integration once it's set up.
 
