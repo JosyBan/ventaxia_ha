@@ -17,19 +17,19 @@ The card has three tabs.
 - **Silent hours**: tap to edit the start/end time and days.
 - **Summer bypass**: shows the indoor/outdoor temperature thresholds and bypass mode. Tap to edit them.
 
-![screenshot1|50%][Status]
+<img src="images/Screenshot1.png" width="400" />
 
 **Performance**
 
 - Outdoor, extract (indoor) and supply air temperatures.
 
-![screenshot2|50%][Performance]
+<img src="images/Screenshot2.png" width="400" />
 
 **Maintenance**
 
 - Filter months remaining and service information.
 
-![screenshot3|50%][Maintenance]
+<img src="images/Screenshots3.png" width="400" />
 
 ## Installation
 
@@ -115,8 +115,3 @@ The browser console prints `VENTAXIA-CARD <version>` when the card loads. It sho
 
 For anything else, please [open an issue](https://github.com/JosyBan/ventaxia_ha/issues).
 
----
-
-[Status]: images/Screenshot1.png
-[Performance]: images/Screenshot2.png
-[Maintenance]: images/Screenshots3.png
