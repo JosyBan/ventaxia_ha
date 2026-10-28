@@ -18,11 +18,12 @@ This integration relies on the [ventaxiaiot python library](https://github.com/J
 
 **This component will set up the following platforms.**
 
-| Platform  | Description                                        |
-| --------- | -------------------------------------------------- |
-| `sensor`  | Provides various readings for your Ventaxia device |
-| `button`  | Run some of the airflow commands                   |
-| `service` | Add a service to update the airflow                |
+| Platform      | Description                                                               |
+| ------------- | ------------------------------------------------------------------------- |
+| `sensor`      | Provides various readings for your Ventaxia device                        |
+| `button`      | Run some of the airflow commands                                          |
+| `service`     | Add a service to update the airflow                                       |
+| Lovelace card | A dashboard card to monitor and control the unit ([details](doc/CARD.md)) |
 
 ![example][logo]
 
@@ -68,9 +69,20 @@ After installation and restarting Home Assistant, you can configure the Ventaxia
 
         Deice ID: This is the WIFI SSID of the device (see example image)
 
-![example][module]
+![example|50%][module]
 
 Once successfully configured, the integration will automatically discover and create relevant sensor entities. You can find the full list of available entities under Settings > Devices & Services > Ventaxia integration once it's set up.
+
+## Dashboard Card
+
+The integration includes a Lovelace card, `custom:ventaxia-card`, for controlling the unit from a dashboard: airflow modes and timed boosts, schedules, silent hours, summer bypass, temperatures and filter status. It is installed and registered automatically with the integration, so there is nothing extra to download.
+
+```yaml
+type: custom:ventaxia-card
+device_id: <your device id>
+```
+
+See the [card documentation](doc/CARD.md) for setup, configuration options and troubleshooting.
 
 ## Troubleshooting
 
