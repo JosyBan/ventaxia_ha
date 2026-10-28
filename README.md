@@ -69,7 +69,8 @@ After installation and restarting Home Assistant, you can configure the Ventaxia
 
         Deice ID: This is the WIFI SSID of the device (see example image)
 
-![example|25%][module]
+
+<img src="./advance_wifi_module.png" width="250" />
 
 Once successfully configured, the integration will automatically discover and create relevant sensor entities. You can find the full list of available entities under Settings > Devices & Services > Ventaxia integration once it's set up.
 
@@ -132,7 +133,7 @@ And it was heavely inspired by [@CJNE](https://github.com/CJNE)'s [ha-myenergi] 
 [discord]: https://discord.gg/Qa5fW2R
 [discord-shield]: https://img.shields.io/discord/330944238910963714.svg?style=for-the-badge
 [logo]: logo@2x.png
-[module]: advance_wifi_module.png
+[module]: advance_wifi_module.png 
 [forum-shield]: https://img.shields.io/badge/community-forum-brightgreen.svg?style=for-the-badge
 [forum]: https://community.home-assistant.io/
 [license-shield]: https://img.shields.io/github/license/JosyBan/ventaxia_ha.svg?style=for-the-badge
