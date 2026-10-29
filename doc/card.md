@@ -114,4 +114,3 @@ See `services.yaml` or **Developer tools > Actions** for the fields each one acc
 The browser console prints `VENTAXIA-CARD <version>` when the card loads. It should match the integration version.
 
 For anything else, please [open an issue](https://github.com/JosyBan/ventaxia_ha/issues).
-
