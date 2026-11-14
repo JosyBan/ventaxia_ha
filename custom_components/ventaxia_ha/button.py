@@ -22,7 +22,13 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up VentAxia buttons from a config entry."""
-    coordinator: VentAxiaCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    coordinator = hass.data[DOMAIN][config_entry.entry_id]
+
+    from .mqtt_coordinator import VentAxiaMqttBoostButton, VentAxiaMqttCoordinator
+
+    if isinstance(coordinator, VentAxiaMqttCoordinator):
+        async_add_entities([VentAxiaMqttBoostButton(coordinator)])
+        return
 
     entities = [
         VentAxiaResetModeButton(coordinator),

@@ -26,6 +26,8 @@ import ssl
 from typing import Any, Callable
 
 import paho.mqtt.client as mqtt
+from homeassistant.components.button import ButtonEntity
+from homeassistant.components.select import SelectEntity
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -136,6 +138,18 @@ MQTT_SENSORS: tuple[SensorEntityDescription, ...] = (
 )
 
 
+# Airflow override (the app's "Change mode"): publish {"gtm": N, "treq": "HH:MM:SS"}
+# to <deviceId>/vent/uo. gtm 0=Off/cancel, 1=Low, 2=Normal, 3=Boost, 4=Purge,
+# 5=Max (matches the caf "ps" field the unit reports). Verified on a live unit.
+OVERRIDE_TOPIC = "vent/uo"
+MODE_TO_GTM = {"Auto": 0, "Low": 1, "Normal": 2, "Boost": 3, "Purge": 4, "Max": 5}
+GTM_TO_MODE = {1: "Low", 2: "Normal", 3: "Boost", 4: "Purge", 5: "Max"}
+MODE_OPTIONS = ["Auto", "Low", "Normal", "Boost", "Purge", "Max"]
+# Default override duration when a mode is selected (the unit reverts after this).
+DEFAULT_OVERRIDE = "02:00:00"
+BOOST_DURATION = "00:15:00"
+
+
 class VentAxiaMqttCoordinator:
     """Maintain the MQTT-over-TLS-PSK connection and cache published values."""
 
@@ -232,6 +246,26 @@ class VentAxiaMqttCoordinator:
         return self.values.get(key)
 
     @property
+    def current_mode(self) -> str | None:
+        """Map the unit's current airflow speed (caf 'ps') to a mode label."""
+        raw = self.values.get("vent/caf")
+        if not raw:
+            return None
+        try:
+            ps = json.loads(raw).get("ps")
+        except (ValueError, AttributeError):
+            return None
+        return GTM_TO_MODE.get(ps)
+
+    def set_override(self, gtm: int, treq: str) -> None:
+        """Publish an airflow override to the unit."""
+        if self._client is None:
+            return
+        payload = json.dumps({"gtm": gtm, "treq": treq})
+        self._client.publish(f"{self.device_id}/{OVERRIDE_TOPIC}", payload, qos=0)
+        _LOGGER.debug("VentAxia override -> %s", payload)
+
+    @property
     def available(self) -> bool:
         return self._connected
 
@@ -297,3 +331,67 @@ class VentAxiaMqttSensor(SensorEntity):
 
     async def async_will_remove_from_hass(self) -> None:
         self._coordinator.remove_update_callback(self._handle_update)
+
+
+class VentAxiaMqttModeSelect(SelectEntity):
+    """Airflow mode override for the newer controller."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Ventilation Mode"
+    _attr_icon = "mdi:fan"
+    _attr_options = MODE_OPTIONS
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_mode"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return self._coordinator.available
+
+    @property
+    def current_option(self) -> str | None:
+        return self._coordinator.current_mode
+
+    async def async_select_option(self, option: str) -> None:
+        gtm = MODE_TO_GTM.get(option)
+        if gtm is None:
+            return
+        treq = "00:00:00" if gtm == 0 else DEFAULT_OVERRIDE
+        self._coordinator.set_override(gtm, treq)
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
+
+
+class VentAxiaMqttBoostButton(ButtonEntity):
+    """One-press boost for a fixed duration."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Boost 15 min"
+    _attr_icon = "mdi:fan-plus"
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_boost"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return self._coordinator.available
+
+    async def async_press(self) -> None:
+        self._coordinator.set_override(MODE_TO_GTM["Boost"], BOOST_DURATION)

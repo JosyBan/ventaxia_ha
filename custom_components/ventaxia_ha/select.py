@@ -13,7 +13,13 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
 
-    coordinator: VentAxiaCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    coordinator = hass.data[DOMAIN][config_entry.entry_id]
+
+    from .mqtt_coordinator import VentAxiaMqttCoordinator, VentAxiaMqttModeSelect
+
+    if isinstance(coordinator, VentAxiaMqttCoordinator):
+        async_add_entities([VentAxiaMqttModeSelect(coordinator)])
+        return
 
     async_add_entities([VentAxiaCommissionModeSelect(coordinator)])
 

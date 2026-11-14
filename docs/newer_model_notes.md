@@ -76,12 +76,20 @@ live topics (device id `59375-7KK9M`):
 | `vent/afs/{rpm,pwr,pwm}` | supply fan | `2096.8 / 24.4 / 50.0` |
 | `vent/afe/{rpm,pwr,pwm}` | extract fan | `2094.9 / 24.4 / 50.0` |
 
-Other topics seen in the app bundle (not all published at rest): `vent/afc`,
-`vent/cm`, `vent/caf`, `vent/daf`, `vent/maxaf`, `vent/filtertmr/*`,
-`vent/filter1/typ`, `vent/filter2/typ`, `vent/pf`, `vent/saq`, `vent/uo`, plus
-`.../conf/wr` and `.../typ/wr` for writes (control is not yet implemented here).
+Other topics seen in the app bundle: `vent/afc`, `vent/cm`, `vent/caf`,
+`vent/daf`, `vent/maxaf`, `vent/filtertmr/*`, `vent/filter1/typ`,
+`vent/filter2/typ`, `vent/pf`, `vent/saq`, plus `.../conf/wr` and `.../typ/wr`.
 
-**Status:** implemented. `mqtt_coordinator.py` provides an MQTT coordinator and
-sensor platform for this model, wired in via the `Advance S (>2023)` config-flow
-option. Read-only sensors work; airflow-mode control over the `vent/.../wr`
-topics remains as future work.
+**Airflow override / mode control** (the app's "Change mode"): publish to
+`<deviceId>/vent/uo` the JSON `{"gtm": N, "treq": "HH:MM:SS"}`, where `gtm` is
+the airflow preset (`0`=Off/cancel-override, `1`=Low, `2`=Normal, `3`=Boost,
+`4`=Purge, `5`=Max — the same scale as the `vent/caf` `ps` field the unit
+reports) and `treq` is the override duration; the unit reverts to its schedule
+afterwards. Verified live: `{"gtm":2,...}` moves `caf.ps` to 2 and the fans
+ramp accordingly. Note `vent/cm/wr` is a *separate* "VentControlMode", **not**
+the user override.
+
+**Status:** implemented. `mqtt_coordinator.py` provides the MQTT coordinator,
+the sensor platform, a **Ventilation Mode select** (Auto/Low/Normal/Boost/
+Purge/Max) and a **Boost button**, wired in via the `Advance S (>2023)`
+config-flow option. Sensors and controls verified against a live unit.
