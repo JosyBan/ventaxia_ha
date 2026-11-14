@@ -23,10 +23,12 @@ from __future__ import annotations
 import json
 import logging
 import ssl
+from datetime import datetime
 from typing import Any, Callable
 
 import paho.mqtt.client as mqtt
 from homeassistant.components.button import ButtonEntity
+from homeassistant.components.number import NumberEntity, RestoreNumber
 from homeassistant.components.select import SelectEntity
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -42,9 +44,11 @@ from homeassistant.const import (
     EntityCategory,
     UnitOfPower,
     UnitOfTemperature,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.util import dt as dt_util
 
 from .client import decode_psk
 from .const import (
@@ -145,9 +149,18 @@ OVERRIDE_TOPIC = "vent/uo"
 MODE_TO_GTM = {"Auto": 0, "Low": 1, "Normal": 2, "Boost": 3, "Purge": 4, "Max": 5}
 GTM_TO_MODE = {1: "Low", 2: "Normal", 3: "Boost", 4: "Purge", 5: "Max"}
 MODE_OPTIONS = ["Auto", "Low", "Normal", "Boost", "Purge", "Max"]
-# Default override duration when a mode is selected (the unit reverts after this).
-DEFAULT_OVERRIDE = "00:15:00"
+# Default override duration (minutes) when a mode is selected; adjustable via the
+# Override Duration number entity. The unit reverts to its schedule afterwards.
+DEFAULT_OVERRIDE_MINUTES = 15
+MIN_OVERRIDE_MINUTES = 5
+MAX_OVERRIDE_MINUTES = 480
 BOOST_DURATION = "00:15:00"
+
+
+def minutes_to_treq(minutes: int) -> str:
+    """Format a whole-minute duration as the unit's "HH:MM:SS" treq string."""
+    minutes = max(0, int(minutes))
+    return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
 
 
 class VentAxiaMqttCoordinator:
@@ -162,6 +175,9 @@ class VentAxiaMqttCoordinator:
         self._connected = False
         self._callbacks: set[Callable[[], None]] = set()
         self._client: mqtt.Client | None = None
+        # Override duration (minutes) used when a mode is selected; settable via
+        # the Override Duration number entity.
+        self.override_minutes: int = DEFAULT_OVERRIDE_MINUTES
 
     # ---- lifecycle -------------------------------------------------------
     def _build_context(self) -> ssl.SSLContext:
@@ -262,6 +278,36 @@ class VentAxiaMqttCoordinator:
         except (ValueError, AttributeError):
             return None
         return bool(cor.get("trem")) or cor.get("treq", "00:00:00") != "00:00:00"
+
+    @property
+    def override_ends_at(self) -> datetime | None:
+        """When the active override ends (vent/cor 'trem'), or None if idle."""
+        raw = self.values.get("vent/cor")
+        if not raw:
+            return None
+        try:
+            trem = json.loads(raw).get("trem")
+        except (ValueError, AttributeError):
+            return None
+        if not trem:
+            return None
+        try:
+            parsed = datetime.fromisoformat(trem)
+        except (ValueError, TypeError):
+            return None
+        # The unit reports local wall-clock time without a zone.
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+        return parsed
+
+    @property
+    def override_remaining_minutes(self) -> int | None:
+        """Minutes left on the active override, or None when idle."""
+        ends = self.override_ends_at
+        if ends is None:
+            return None
+        remaining = (ends - dt_util.now()).total_seconds() / 60
+        return max(0, round(remaining))
 
     @property
     def current_mode(self) -> str | None:
@@ -387,7 +433,10 @@ class VentAxiaMqttModeSelect(SelectEntity):
         gtm = MODE_TO_GTM.get(option)
         if gtm is None:
             return
-        treq = "00:00:00" if gtm == 0 else DEFAULT_OVERRIDE
+        treq = (
+            "00:00:00" if gtm == 0
+            else minutes_to_treq(self._coordinator.override_minutes)
+        )
         self._coordinator.set_override(gtm, treq)
 
     def _handle_update(self) -> None:
@@ -421,3 +470,74 @@ class VentAxiaMqttBoostButton(ButtonEntity):
 
     async def async_press(self) -> None:
         self._coordinator.set_override(MODE_TO_GTM["Boost"], BOOST_DURATION)
+
+
+class VentAxiaMqttDurationNumber(RestoreNumber):
+    """How long a selected mode override runs before the unit reverts."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Override Duration"
+    _attr_icon = "mdi:timer-cog-outline"
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_native_min_value = MIN_OVERRIDE_MINUTES
+    _attr_native_max_value = MAX_OVERRIDE_MINUTES
+    _attr_native_step = 5
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_mode = "box"
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_override_duration"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def native_value(self) -> float:
+        return self._coordinator.override_minutes
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._coordinator.override_minutes = int(value)
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_number_data()
+        if last is not None and last.native_value is not None:
+            self._coordinator.override_minutes = int(last.native_value)
+
+
+class VentAxiaMqttRemainingSensor(SensorEntity):
+    """Minutes left on the active override (blank when on schedule)."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Override Remaining"
+    _attr_icon = "mdi:timer-sand"
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_device_class = SensorDeviceClass.DURATION
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_override_remaining"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return self._coordinator.available
+
+    @property
+    def native_value(self) -> int:
+        return self._coordinator.override_remaining_minutes or 0
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)

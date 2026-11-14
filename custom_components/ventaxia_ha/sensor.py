@@ -53,14 +53,17 @@ async def async_setup_entry(
     from .mqtt_coordinator import (
         MQTT_SENSORS,
         VentAxiaMqttCoordinator,
+        VentAxiaMqttRemainingSensor,
         VentAxiaMqttSensor,
     )
 
     if isinstance(coordinator, VentAxiaMqttCoordinator):
-        async_add_entities(
+        entities: list = [
             VentAxiaMqttSensor(coordinator, description)
             for description in MQTT_SENSORS
-        )
+        ]
+        entities.append(VentAxiaMqttRemainingSensor(coordinator))
+        async_add_entities(entities)
         return
 
     async_add_entities(
