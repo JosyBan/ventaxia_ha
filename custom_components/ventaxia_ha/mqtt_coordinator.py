@@ -246,11 +246,37 @@ class VentAxiaMqttCoordinator:
         return self.values.get(key)
 
     @property
+    def _override_active(self) -> bool | None:
+        """Whether a user override is running (vent/cor).
+
+        The unit reports `trem` (time remaining) as a timestamp while an
+        override is active and an empty string when it is following its
+        schedule (the controller's "Auto" indicator). Returns None when the
+        status has not been received yet.
+        """
+        raw = self.values.get("vent/cor")
+        if raw is None:
+            return None
+        try:
+            cor = json.loads(raw)
+        except (ValueError, AttributeError):
+            return None
+        return bool(cor.get("trem")) or cor.get("treq", "00:00:00") != "00:00:00"
+
+    @property
     def current_mode(self) -> str | None:
-        """Map the unit's current airflow speed (caf 'ps') to a mode label."""
+        """Current ventilation mode for the select.
+
+        "Auto" when the unit is following its schedule (no override), otherwise
+        the active override speed from caf 'ps'. Falls back to the raw speed
+        until the override status (vent/cor) has been received.
+        """
+        active = self._override_active
+        if active is False:
+            return "Auto"
         raw = self.values.get("vent/caf")
         if not raw:
-            return None
+            return "Auto" if active is None else None
         try:
             ps = json.loads(raw).get("ps")
         except (ValueError, AttributeError):
