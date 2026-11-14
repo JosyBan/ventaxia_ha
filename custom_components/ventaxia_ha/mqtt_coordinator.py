@@ -146,7 +146,7 @@ MODE_TO_GTM = {"Auto": 0, "Low": 1, "Normal": 2, "Boost": 3, "Purge": 4, "Max": 
 GTM_TO_MODE = {1: "Low", 2: "Normal", 3: "Boost", 4: "Purge", 5: "Max"}
 MODE_OPTIONS = ["Auto", "Low", "Normal", "Boost", "Purge", "Max"]
 # Default override duration when a mode is selected (the unit reverts after this).
-DEFAULT_OVERRIDE = "02:00:00"
+DEFAULT_OVERRIDE = "00:15:00"
 BOOST_DURATION = "00:15:00"
 
 
