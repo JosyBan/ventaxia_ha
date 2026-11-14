@@ -20,19 +20,22 @@ from homeassistant.core import (
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.device_registry import DeviceInfo
 from ventaxiaiot import (
-    AsyncNativePskClient,
     PendingRequestTracker,
     VentClientCommands,
     VentMessageProcessor,
 )
 
+from .client import VentAxiaPskClient
 from .const import (
     AIRFLOW_MODES,
     CONF_HOST,
     CONF_IDENTITY,
+    CONF_MODEL,
     CONF_PORT,
+    CONF_PSK_IS_HEX,
     CONF_PSK_KEY,
     CONF_WIFI_DEVICE_ID,
+    MODEL_ADVANCE_S_2023,
     DOMAIN,
     INTEGRATION_VERSION,
     SERVICE_SET_AIRFLOW_MODE,
@@ -108,12 +111,14 @@ class VentAxiaCoordinator:
         self._callbacks: set[Callable[[], None]] = set()
 
         self.pending_tracker = PendingRequestTracker()
-        self.client = AsyncNativePskClient(
+        self.client = VentAxiaPskClient(
             wifi_device_id=self.data[CONF_WIFI_DEVICE_ID],
             identity=self.data[CONF_IDENTITY],
             psk_key=self.data[CONF_PSK_KEY],
             host=self.data[CONF_HOST],
             port=self.data[CONF_PORT],
+            psk_is_hex=self.data.get(CONF_PSK_IS_HEX, False),
+            pin_tls12=self.data.get(CONF_MODEL) == MODEL_ADVANCE_S_2023,
             connection_lost_callback=self._handle_disconnect,
         )
         self.processor = VentMessageProcessor(self.pending_tracker)
@@ -335,6 +340,22 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up VentAxia from a config entry."""
+    # Newer (>2023) controllers use an MQTT transport with its own coordinator
+    # and only the sensor platform; the ventaxiaiot services do not apply.
+    if entry.data.get(CONF_MODEL) == MODEL_ADVANCE_S_2023:
+        from .mqtt_coordinator import VentAxiaMqttCoordinator
+
+        mqtt_coordinator = VentAxiaMqttCoordinator(hass, entry)
+        try:
+            await mqtt_coordinator.async_start()
+        except Exception as ex:
+            raise ConfigEntryNotReady from ex
+        hass.data.setdefault(DOMAIN, {})[entry.entry_id] = mqtt_coordinator
+        await hass.config_entries.async_forward_entry_setups(
+            entry, [Platform.SENSOR]
+        )
+        return True
+
     coordinator = VentAxiaCoordinator(hass, entry)
     try:
         await coordinator.async_start()
@@ -453,6 +474,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload VentAxia config entry."""
-    coordinator: VentAxiaCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
+    coordinator = hass.data[DOMAIN].pop(entry.entry_id)
     await coordinator.async_stop()
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    platforms = (
+        [Platform.SENSOR]
+        if entry.data.get(CONF_MODEL) == MODEL_ADVANCE_S_2023
+        else PLATFORMS
+    )
+    return await hass.config_entries.async_unload_platforms(entry, platforms)

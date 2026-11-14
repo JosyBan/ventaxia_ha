@@ -47,7 +47,21 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up VentAxia sensors from a config entry."""
-    coordinator: VentAxiaCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    coordinator = hass.data[DOMAIN][config_entry.entry_id]
+
+    # Newer (>2023) controllers: MQTT-backed sensors, no ventaxiaiot entities.
+    from .mqtt_coordinator import (
+        MQTT_SENSORS,
+        VentAxiaMqttCoordinator,
+        VentAxiaMqttSensor,
+    )
+
+    if isinstance(coordinator, VentAxiaMqttCoordinator):
+        async_add_entities(
+            VentAxiaMqttSensor(coordinator, description)
+            for description in MQTT_SENSORS
+        )
+        return
 
     async_add_entities(
         VentAxiaSensor(coordinator, description) for description in ENTITY_DESCRIPTIONS
