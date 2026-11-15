@@ -352,7 +352,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise ConfigEntryNotReady from ex
         hass.data.setdefault(DOMAIN, {})[entry.entry_id] = mqtt_coordinator
         await hass.config_entries.async_forward_entry_setups(
-            entry, [Platform.SENSOR, Platform.SELECT, Platform.BUTTON, Platform.NUMBER]
+            entry,
+            [
+                Platform.SENSOR,
+                Platform.SELECT,
+                Platform.BUTTON,
+                Platform.NUMBER,
+                Platform.SWITCH,
+            ],
         )
         return True
 
@@ -477,7 +484,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = hass.data[DOMAIN].pop(entry.entry_id)
     await coordinator.async_stop()
     platforms = (
-        [Platform.SENSOR, Platform.SELECT, Platform.BUTTON, Platform.NUMBER]
+        [
+            Platform.SENSOR,
+            Platform.SELECT,
+            Platform.BUTTON,
+            Platform.NUMBER,
+            Platform.SWITCH,
+        ]
         if entry.data.get(CONF_MODEL) == MODEL_ADVANCE_S_2023
         else PLATFORMS
     )

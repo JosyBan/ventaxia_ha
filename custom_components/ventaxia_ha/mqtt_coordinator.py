@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import ssl
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 import paho.mqtt.client as mqtt
@@ -36,6 +36,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
+from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
@@ -48,6 +49,8 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .client import decode_psk
@@ -156,11 +159,27 @@ MIN_OVERRIDE_MINUTES = 5
 MAX_OVERRIDE_MINUTES = 480
 BOOST_DURATION = "00:15:00"
 
+# The hardware override (vent/uo) is always timed — the unit ignores a zero
+# duration, so there is no native "boost until cancelled". The Boost Hold switch
+# emulates it by re-arming a timed boost in chunks while it is on.
+HOLD_CHUNK_MINUTES = 60
+HOLD_REARM_BUFFER_MINUTES = 5
+REFRESH_INTERVAL = timedelta(seconds=30)
+
 
 def minutes_to_treq(minutes: int) -> str:
     """Format a whole-minute duration as the unit's "HH:MM:SS" treq string."""
     minutes = max(0, int(minutes))
     return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
+
+
+def treq_to_seconds(treq: str) -> int:
+    """Parse an "HH:MM:SS" treq string into whole seconds (0 on failure)."""
+    try:
+        hh, mm, ss = (int(part) for part in treq.split(":"))
+    except (ValueError, AttributeError):
+        return 0
+    return hh * 3600 + mm * 60 + ss
 
 
 class VentAxiaMqttCoordinator:
@@ -178,6 +197,14 @@ class VentAxiaMqttCoordinator:
         # Override duration (minutes) used when a mode is selected; settable via
         # the Override Duration number entity.
         self.override_minutes: int = DEFAULT_OVERRIDE_MINUTES
+        # Locally-tracked override end time. The unit's own `vent/cor` `trem`
+        # timestamp is in the controller's local wall-clock with no timezone, so
+        # it cannot be trusted for a countdown when the unit's clock differs from
+        # HA's. We know exactly what duration we asked for, so we track it here.
+        self._local_override_end: datetime | None = None
+        # Boost Hold ("boost until turned off") — re-arms a timed boost.
+        self.boost_hold: bool = False
+        self._refresh_unsub: Callable[[], None] | None = None
 
     # ---- lifecycle -------------------------------------------------------
     def _build_context(self) -> ssl.SSLContext:
@@ -207,6 +234,10 @@ class VentAxiaMqttCoordinator:
         client.on_connect = self._on_connect
         client.on_message = self._on_message
         client.on_disconnect = self._on_disconnect
+        # Automatically reconnect (with backoff) if the socket drops. loop_start's
+        # network thread drives the retries; without this a dropped connection
+        # would leave every entity stuck "unavailable" until HA restarts.
+        client.reconnect_delay_set(min_delay=1, max_delay=120)
         client.tls_set_context(self._build_context())
         self._client = client
 
@@ -215,7 +246,16 @@ class VentAxiaMqttCoordinator:
         await self.hass.async_add_executor_job(client.connect, host, port, 30)
         client.loop_start()
 
+        # Drive the override countdown and the Boost Hold re-arm on a steady tick,
+        # independent of how often the unit publishes telemetry.
+        self._refresh_unsub = async_track_time_interval(
+            self.hass, self._tick, REFRESH_INTERVAL
+        )
+
     async def async_stop(self) -> None:
+        if self._refresh_unsub is not None:
+            self._refresh_unsub()
+            self._refresh_unsub = None
         client = self._client
         self._client = None
         if client is not None:
@@ -224,6 +264,18 @@ class VentAxiaMqttCoordinator:
                 await self.hass.async_add_executor_job(client.disconnect)
             except Exception:  # pragma: no cover - best effort shutdown
                 _LOGGER.debug("Error during MQTT shutdown", exc_info=True)
+
+    def _tick(self, now=None) -> None:
+        """Periodic tick: re-arm a held boost and refresh countdown entities."""
+        if self.boost_hold:
+            end = self._local_override_end
+            if (
+                end is None
+                or (end - dt_util.now()).total_seconds()
+                < HOLD_REARM_BUFFER_MINUTES * 60
+            ):
+                self._apply_boost_chunk()
+        self._notify()
 
     # ---- paho callbacks (run in paho's network thread) -------------------
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
@@ -263,13 +315,16 @@ class VentAxiaMqttCoordinator:
 
     @property
     def _override_active(self) -> bool | None:
-        """Whether a user override is running (vent/cor).
+        """Whether a user override is running.
 
-        The unit reports `trem` (time remaining) as a timestamp while an
-        override is active and an empty string when it is following its
-        schedule (the controller's "Auto" indicator). Returns None when the
-        status has not been received yet.
+        True while our locally-tracked override is still in the future, or while
+        the unit's `vent/cor` reports a non-empty `trem` (an override started
+        outside HA, e.g. from the wall controller). Empty `trem` with no local
+        override means the unit is following its schedule (the "Auto" state).
+        Returns None when nothing is known yet.
         """
+        if self._local_override_end is not None:
+            return self._local_override_end > dt_util.now()
         raw = self.values.get("vent/cor")
         if raw is None:
             return None
@@ -277,11 +332,10 @@ class VentAxiaMqttCoordinator:
             cor = json.loads(raw)
         except (ValueError, AttributeError):
             return None
-        return bool(cor.get("trem")) or cor.get("treq", "00:00:00") != "00:00:00"
+        return bool(cor.get("trem"))
 
-    @property
-    def override_ends_at(self) -> datetime | None:
-        """When the active override ends (vent/cor 'trem'), or None if idle."""
+    def _device_override_end(self) -> datetime | None:
+        """Parse the unit's reported override end (vent/cor 'trem'); clock-based."""
         raw = self.values.get("vent/cor")
         if not raw:
             return None
@@ -299,6 +353,20 @@ class VentAxiaMqttCoordinator:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
         return parsed
+
+    @property
+    def override_ends_at(self) -> datetime | None:
+        """When the active override ends.
+
+        Prefers our locally-tracked end (immune to the unit's clock/timezone);
+        falls back to the unit's reported `trem` for overrides started elsewhere.
+        """
+        local = self._local_override_end
+        if local is not None and local > dt_util.now():
+            return local
+        if local is None:
+            return self._device_override_end()
+        return None
 
     @property
     def override_remaining_minutes(self) -> int | None:
@@ -330,12 +398,35 @@ class VentAxiaMqttCoordinator:
         return GTM_TO_MODE.get(ps)
 
     def set_override(self, gtm: int, treq: str) -> None:
-        """Publish an airflow override to the unit."""
+        """Publish an airflow override to the unit and track its end locally."""
         if self._client is None:
             return
         payload = json.dumps({"gtm": gtm, "treq": treq})
-        self._client.publish(f"{self.device_id}/{OVERRIDE_TOPIC}", payload, qos=0)
+        # QoS 1 so a press issued during a brief reconnect is still delivered.
+        self._client.publish(f"{self.device_id}/{OVERRIDE_TOPIC}", payload, qos=1)
         _LOGGER.debug("VentAxia override -> %s", payload)
+        # Track the end locally (clock-independent). gtm 0 cancels the override.
+        if gtm == 0:
+            self._local_override_end = None
+        else:
+            secs = treq_to_seconds(treq)
+            self._local_override_end = (
+                dt_util.now() + timedelta(seconds=secs) if secs > 0 else None
+            )
+        self._notify()
+
+    def _apply_boost_chunk(self) -> None:
+        """(Re)issue a timed boost chunk to keep Boost Hold alive."""
+        self.set_override(MODE_TO_GTM["Boost"], minutes_to_treq(HOLD_CHUNK_MINUTES))
+
+    def set_boost_hold(self, on: bool) -> None:
+        """Turn 'boost until cancelled' on or off (emulated via re-arming)."""
+        self.boost_hold = on
+        if on:
+            self._apply_boost_chunk()
+        else:
+            self.set_override(0, "00:00:00")
+        self._notify()
 
     @property
     def available(self) -> bool:
@@ -423,7 +514,9 @@ class VentAxiaMqttModeSelect(SelectEntity):
 
     @property
     def available(self) -> bool:  # type: ignore[override]
-        return self._coordinator.available
+        # Controls stay pressable across brief reconnects; the command is sent
+        # with QoS 1 and delivered once the socket is back.
+        return True
 
     @property
     def current_option(self) -> str | None:
@@ -466,10 +559,56 @@ class VentAxiaMqttBoostButton(ButtonEntity):
 
     @property
     def available(self) -> bool:  # type: ignore[override]
-        return self._coordinator.available
+        # A button is stateless; keep it pressable across brief reconnects.
+        return True
 
     async def async_press(self) -> None:
         self._coordinator.set_override(MODE_TO_GTM["Boost"], BOOST_DURATION)
+
+
+class VentAxiaMqttBoostHoldSwitch(SwitchEntity, RestoreEntity):
+    """Boost until turned off.
+
+    The unit's override is always timed (a zero duration is ignored), so this
+    switch emulates an indefinite boost by re-arming a timed boost in chunks
+    while it is on — ideal for driving from an automation (e.g. a hob sensor)
+    instead of wiring a relay to the hardware Boost input.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Boost Hold"
+    _attr_icon = "mdi:fan-plus"
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_boost_hold"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def is_on(self) -> bool:
+        return self._coordinator.boost_hold
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        self._coordinator.set_boost_hold(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        self._coordinator.set_boost_hold(False)
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        # Restore the hold across restarts; re-arm if it was on.
+        last = await self.async_get_last_state()
+        if last is not None and last.state == "on":
+            self._coordinator.set_boost_hold(True)
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
 
 
 class VentAxiaMqttDurationNumber(RestoreNumber):

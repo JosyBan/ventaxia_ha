@@ -107,6 +107,21 @@ afterwards. Verified live: `{"gtm":2,...}` moves `caf.ps` to 2 and the fans
 ramp accordingly. Note `vent/cm/wr` is a *separate* "VentControlMode", **not**
 the user override.
 
+**Override status (`vent/cor`)** is published when an override is set:
+`{"ot":9,"os":129,"trem":"2026-11-15T15:39:05","treq":"00:05:00"}`. `treq` echoes
+the requested duration; `trem` is the **end time as the controller's local
+wall-clock with no timezone**. At rest it reports `{"ot":1,...,"trem":"","treq":
+"00:00:00"}` (empty `trem` = following the schedule = "Auto"). Because `trem` has
+no zone and depends on the unit's RTC, a countdown computed as `trem - now` is
+wrong whenever the unit's clock/timezone differs from Home Assistant's — so the
+integration tracks the override end **locally** from the duration it sent, and
+only falls back to `trem` for overrides started outside HA.
+
+**No indefinite override:** verified live that `{"gtm":3,"treq":"00:00:00"}` is
+ignored (the unit stays on its schedule). The hardware override is always timed.
+"Boost until cancelled" is emulated in the integration by re-arming a timed boost
+(the Boost Hold switch).
+
 **Status:** implemented. `mqtt_coordinator.py` provides the MQTT coordinator,
 the sensor platform, a **Ventilation Mode select** (Auto/Low/Normal/Boost/
 Purge/Max) and a **Boost button**, wired in via the `Advance S (>2023)`
