@@ -22,7 +22,7 @@
       },
       "advance_s_2023": {
         "title": "Advance S (>2023) / SX / Econiq",
-        "description": "These controllers have no printed key. The identity is a fixed value used by the Vent-Axia Connect app (leave as 'zirconia'). The PSK is the key your unit exposes over Bluetooth in pairing mode (read the 'tlsKey' characteristic); enter it as hex. The Device SSID is the unit's device ID. The data port is 8883.",
+        "description": "These controllers have no printed key. Note: {ble_status}\n\nThe identity is a fixed value used by the Vent-Axia Connect app (leave as 'zirconia'). The PSK is the key your unit exposes over Bluetooth in pairing mode (the 'tlsKey' characteristic); enter it as hex. The Device SSID is the unit's device ID. The data port is 8883.",
         "data": {
           "host": "Host",
           "port": "Port",

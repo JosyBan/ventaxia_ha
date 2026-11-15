@@ -3,11 +3,11 @@
   "name": "Vent Axia",
   "codeowners": ["@JosyBan"],
   "config_flow": true,
-  "dependencies": ["frontend", "http"],
+  "dependencies": ["frontend", "http", "bluetooth"],
   "documentation": "https://github.com/JosyBan/ventaxia_ha",
   "integration_type": "device",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/JosyBan/ventaxia_ha/issues",
   "requirements": ["ventaxiaiot>=0.1.12"],
-  "version": "0.3.0"
+  "version": "0.4.0"
 }

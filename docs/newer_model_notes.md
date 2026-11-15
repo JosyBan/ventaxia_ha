@@ -53,6 +53,24 @@ and no app backup required. The app also caches it; since it is a React Native
 app with no SecureStore/Keychain usage, the value is stored in plaintext in the
 app's data (reachable via `adb backup`, `allowBackup=true`).
 
+### Auto-detect during setup
+
+`custom_components/ventaxia_ha/ble.py` uses this during the config flow. When
+the `Advance S (>2023)` form first opens it scans over Home Assistant's
+Bluetooth stack for a controller (advertised name `Sentinel Econiq`, Auth
+service `e6834e4b-…f564d3`), connects, and reads the characteristics:
+
+- **Device ID** (`673de933-…690a`) is always readable, so it is pre-filled
+  automatically.
+- **PSK** (`638ff62c-…e8ad`) is pre-filled only when the unit is in pairing
+  mode. On an already-provisioned unit it reads back as all zeros; the flow
+  detects that ("locked") and leaves the PSK blank with a note to put the unit
+  into pairing mode or enter it by hand.
+
+Only the host IP then has to be entered manually. This requires the HA host to
+have a Bluetooth adapter (or an ESPHome/Shelly Bluetooth proxy) in range of the
+unit; with no adapter the form falls back to fully manual entry.
+
 ## Application protocol — real MQTT on port 8883
 
 The older model speaks "MQTT-shaped JSON over TLS-PSK" with topics
