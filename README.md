@@ -85,8 +85,12 @@ Once successfully configured, the integration will automatically discover and cr
 
 The key-less controllers (the ones with no printed Wi-Fi key) are added with the
 **"Advance S (>2023) / SX / Econiq"** option in the setup menu. They speak a real
-MQTT 3.1.1 broker over TLS-PSK on **port 8883**. Full reverse-engineering notes —
-topic map, override/mode control, TLS parameters — are in
+MQTT 3.1.1 broker over TLS-PSK on **port 8883**.
+
+📖 **[Full setup guide for the newer controllers →](docs/newer_model_setup.md)** —
+what to enter, the Bluetooth auto-detect, every entity you get, Boost Hold and
+maintenance sensors, and troubleshooting. Reverse-engineering notes (topic map,
+override/mode control, TLS parameters) are in
 [`docs/newer_model_notes.md`](docs/newer_model_notes.md).
 
 You need five values:
