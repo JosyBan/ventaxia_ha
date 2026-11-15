@@ -25,6 +25,7 @@ import json
 import logging
 import ssl
 import threading
+import time
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -236,6 +237,11 @@ POLL_SERVE_WAIT = 1.2   # seconds to let the broker serve a batch before unsubsc
 POLL_BATCH_GAP = 0.3    # pause between batches
 POLL_INTERVAL = 45      # seconds between full refresh cycles
 
+# The controller's broker occasionally drops the TLS socket; paho reconnects
+# within a second or two. Don't flap every entity to "unavailable" for those
+# brief blips — only report unavailable after this long with no live connection.
+AVAILABILITY_GRACE = 240.0  # seconds
+
 
 class VentAxiaMqttCoordinator:
     """Maintain the MQTT-over-TLS-PSK connection and cache published values."""
@@ -247,6 +253,7 @@ class VentAxiaMqttCoordinator:
         self.device_id: str = entry.data[CONF_WIFI_DEVICE_ID]
         self.values: dict[str, Any] = {}
         self._connected = False
+        self._last_seen: float | None = None
         self._callbacks: set[Callable[[], None]] = set()
         self._client: mqtt.Client | None = None
         # Override duration (minutes) used when a mode is selected; settable via
@@ -387,6 +394,7 @@ class VentAxiaMqttCoordinator:
             _LOGGER.warning("VentAxia MQTT connect failed: rc=%s", reason_code)
             return
         self._connected = True
+        self._last_seen = time.monotonic()
         # "#" delivers live telemetry the device pushes on its own cadence; the
         # poll thread fills in current values (and the maintenance/bypass topics
         # the wildcard never serves).
@@ -404,6 +412,7 @@ class VentAxiaMqttCoordinator:
         ) else msg.topic
         payload = msg.payload.decode("utf-8", "replace")
         self.values[suffix] = payload
+        self._last_seen = time.monotonic()
         # Flatten the Wi-Fi JSON blob into a synthetic rssi topic.
         if suffix == "mdet/wifi/sta":
             try:
@@ -635,7 +644,13 @@ class VentAxiaMqttCoordinator:
 
     @property
     def available(self) -> bool:
-        return self._connected
+        # Stay available through brief reconnects: only report unavailable after
+        # AVAILABILITY_GRACE seconds with no live connection or data.
+        if self._connected:
+            return True
+        if self._last_seen is None:
+            return False
+        return (time.monotonic() - self._last_seen) < AVAILABILITY_GRACE
 
     @property
     def device_info(self) -> DeviceInfo:
