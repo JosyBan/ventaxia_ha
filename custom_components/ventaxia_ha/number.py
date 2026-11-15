@@ -17,7 +17,16 @@ async def async_setup_entry(
     """Set up VentAxia number entities for the newer (MQTT) controller."""
     coordinator = hass.data[DOMAIN][config_entry.entry_id]
 
-    from .mqtt_coordinator import VentAxiaMqttCoordinator, VentAxiaMqttDurationNumber
+    from .mqtt_coordinator import (
+        VentAxiaMqttCoordinator,
+        VentAxiaMqttDurationNumber,
+        VentAxiaMqttHumidityThresholdNumber,
+    )
 
     if isinstance(coordinator, VentAxiaMqttCoordinator):
-        async_add_entities([VentAxiaMqttDurationNumber(coordinator)])
+        async_add_entities(
+            [
+                VentAxiaMqttDurationNumber(coordinator),
+                VentAxiaMqttHumidityThresholdNumber(coordinator),
+            ]
+        )

@@ -134,6 +134,11 @@ MQTT_SENSORS: tuple[SensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
     ),
     SensorEntityDescription(
+        key="vent/saq",
+        name="Supply Air Quality",
+        icon="mdi:air-filter",
+    ),
+    SensorEntityDescription(
         key="mdet/wifi/sta#rssi",
         name="Wi-Fi Signal",
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
@@ -223,6 +228,8 @@ POLL_TOPICS: tuple[str, ...] = (
     "vent/filter2/typ",
     "vent/sbs",
     "vent/sbc",
+    "vent/saq",
+    "io/erh/conf",
 )
 POLL_BATCH = 4          # topics subscribed at once (keep well under the table size)
 POLL_SERVE_WAIT = 1.2   # seconds to let the broker serve a batch before unsubscribe
@@ -566,6 +573,35 @@ class VentAxiaMqttCoordinator:
         # `op` is the active bypass output (0 = closed/not bypassing).
         return "Open" if sbs.get("op") else "Closed"
 
+    @property
+    def humidity_threshold(self) -> float | None:
+        """Extract-humidity % at which the unit auto-boosts (io/erh/conf 'th')."""
+        conf = self._json_val("io/erh/conf")
+        if conf is None:
+            return None
+        try:
+            return float(conf.get("th"))
+        except (TypeError, ValueError):
+            return None
+
+    def set_humidity_threshold(self, value: float) -> None:
+        """Write a new humidity boost threshold, preserving the other IAQ fields."""
+        if self._client is None:
+            return
+        conf = self._json_val("io/erh/conf")
+        # Preserve the humidity-response fields the app sets; fall back to the
+        # unit's known defaults only if we have not read the config yet.
+        if conf is None:
+            conf = {"are": True, "rre": True, "rror": 900, "gtm": 3}
+        conf = dict(conf)
+        conf["th"] = float(value)
+        payload = json.dumps(conf)
+        self._client.publish(f"{self.device_id}/io/erh/conf/wr", payload, qos=1)
+        _LOGGER.debug("VentAxia humidity threshold -> %s", payload)
+        # Optimistic cache update so the UI reflects the change immediately.
+        self.values["io/erh/conf"] = payload
+        self._notify()
+
     def set_override(self, gtm: int, treq: str) -> None:
         """Publish an airflow override to the unit and track its end locally."""
         if self._client is None:
@@ -814,6 +850,51 @@ class VentAxiaMqttDurationNumber(RestoreNumber):
         last = await self.async_get_last_number_data()
         if last is not None and last.native_value is not None:
             self._coordinator.override_minutes = int(last.native_value)
+
+
+class VentAxiaMqttHumidityThresholdNumber(NumberEntity):
+    """Extract-humidity % at which the unit automatically boosts (IAQ)."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Humidity Boost Threshold"
+    _attr_icon = "mdi:water-percent"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_native_min_value = 60
+    _attr_native_max_value = 90
+    _attr_native_step = 1
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_mode = "slider"
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_humidity_threshold"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return (
+            self._coordinator.available
+            and self._coordinator.humidity_threshold is not None
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        return self._coordinator.humidity_threshold
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._coordinator.set_humidity_threshold(value)
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
 
 
 class VentAxiaMqttRemainingSensor(SensorEntity):
