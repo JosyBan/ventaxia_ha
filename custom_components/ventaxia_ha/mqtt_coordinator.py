@@ -24,6 +24,7 @@ import calendar
 import json
 import logging
 import ssl
+import threading
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -191,13 +192,17 @@ def add_months(dt: datetime, months: int) -> datetime:
 
 
 # The controller serves a topic's *current* value immediately on an exact-topic
-# subscription. The "<deviceId>/#" wildcard only delivers a topic when the device
-# next publishes it on its own (slow, staggered) cadence, which leaves many
-# sensors "unavailable" for minutes after each (re)connect. So we exact-subscribe
-# to every topic we surface — telemetry as well as the maintenance/bypass values,
-# which the wildcard never serves at all.
-EXACT_TOPICS: tuple[str, ...] = (
-    # Telemetry
+# subscription, but its broker has a small subscription table — holding more than
+# a handful of subscriptions makes it silently drop the rest (so many sensors sat
+# "unavailable"). The "<deviceId>/#" wildcard only delivers a topic when the
+# device next publishes it on its own slow cadence, and never serves the
+# maintenance/bypass values at all.
+#
+# So we keep "#" for live telemetry and *poll* current values in small batches:
+# subscribe a few topics (the broker serves their current value), then
+# unsubscribe them again, cycling through the whole list. Only a few
+# subscriptions are ever held at once, so nothing gets dropped.
+POLL_TOPICS: tuple[str, ...] = (
     "io/t1",
     "io/t3",
     "io/erh/val",
@@ -210,7 +215,6 @@ EXACT_TOPICS: tuple[str, ...] = (
     "vent/afe/pwr",
     "vent/caf",
     "vent/cor",
-    # Maintenance / bypass (never served on the wildcard)
     "mdet/svctmr/last",
     "mdet/svctmr/int",
     "vent/filtertmr/last",
@@ -220,8 +224,10 @@ EXACT_TOPICS: tuple[str, ...] = (
     "vent/sbs",
     "vent/sbc",
 )
-# Re-subscribe to the exact topics this often (ticks) to refresh their values.
-EXACT_REFRESH_TICKS = 10  # ~5 minutes at a 30s tick
+POLL_BATCH = 4          # topics subscribed at once (keep well under the table size)
+POLL_SERVE_WAIT = 1.2   # seconds to let the broker serve a batch before unsubscribe
+POLL_BATCH_GAP = 0.3    # pause between batches
+POLL_INTERVAL = 45      # seconds between full refresh cycles
 
 
 class VentAxiaMqttCoordinator:
@@ -248,6 +254,10 @@ class VentAxiaMqttCoordinator:
         self.boost_hold: bool = False
         self._refresh_unsub: Callable[[], None] | None = None
         self._tick_count: int = 0
+        # Background value-poller (works around the broker's tiny sub table).
+        self._poll_thread: threading.Thread | None = None
+        self._poll_stop = threading.Event()
+        self._poll_wake = threading.Event()
 
     # ---- lifecycle -------------------------------------------------------
     def _build_context(self) -> ssl.SSLContext:
@@ -295,10 +305,22 @@ class VentAxiaMqttCoordinator:
             self.hass, self._tick, REFRESH_INTERVAL
         )
 
+        # Start the background value-poller.
+        self._poll_stop.clear()
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop, name="ventaxia-poll", daemon=True
+        )
+        self._poll_thread.start()
+
     async def async_stop(self) -> None:
         if self._refresh_unsub is not None:
             self._refresh_unsub()
             self._refresh_unsub = None
+        self._poll_stop.set()
+        self._poll_wake.set()
+        if self._poll_thread is not None:
+            await self.hass.async_add_executor_job(self._poll_thread.join, 5)
+            self._poll_thread = None
         client = self._client
         self._client = None
         if client is not None:
@@ -307,6 +329,36 @@ class VentAxiaMqttCoordinator:
                 await self.hass.async_add_executor_job(client.disconnect)
             except Exception:  # pragma: no cover - best effort shutdown
                 _LOGGER.debug("Error during MQTT shutdown", exc_info=True)
+
+    def _poll_loop(self) -> None:
+        """Cycle through POLL_TOPICS, briefly subscribing so the broker serves
+        each value, then unsubscribing — keeping only a few subscriptions held at
+        once so the controller's small subscription table never overflows."""
+        while not self._poll_stop.is_set():
+            if self._connected and self._client is not None:
+                client = self._client
+                for i in range(0, len(POLL_TOPICS), POLL_BATCH):
+                    if self._poll_stop.is_set() or not self._connected:
+                        break
+                    batch = POLL_TOPICS[i : i + POLL_BATCH]
+                    for topic in batch:
+                        try:
+                            client.subscribe(f"{self.device_id}/{topic}", qos=0)
+                        except Exception:  # pragma: no cover
+                            pass
+                    if self._poll_stop.wait(POLL_SERVE_WAIT):
+                        break
+                    for topic in batch:
+                        try:
+                            client.unsubscribe(f"{self.device_id}/{topic}")
+                        except Exception:  # pragma: no cover
+                            pass
+                    if self._poll_stop.wait(POLL_BATCH_GAP):
+                        break
+                self.hass.loop.call_soon_threadsafe(self._notify)
+            # Wait until the next cycle, or until woken by a (re)connect.
+            self._poll_wake.wait(POLL_INTERVAL)
+            self._poll_wake.clear()
 
     def _tick(self, now=None) -> None:
         """Periodic tick: re-arm a held boost and refresh countdown entities."""
@@ -319,15 +371,6 @@ class VentAxiaMqttCoordinator:
                 < HOLD_REARM_BUFFER_MINUTES * 60
             ):
                 self._apply_boost_chunk()
-        # Periodically re-request the exact-subscription values so maintenance
-        # and bypass readings stay fresh.
-        if (
-            self._connected
-            and self._client is not None
-            and self._tick_count % EXACT_REFRESH_TICKS == 0
-        ):
-            for topic in EXACT_TOPICS:
-                self._client.subscribe(f"{self.device_id}/{topic}", qos=0)
         self._notify()
 
     # ---- paho callbacks (run in paho's network thread) -------------------
@@ -337,11 +380,11 @@ class VentAxiaMqttCoordinator:
             _LOGGER.warning("VentAxia MQTT connect failed: rc=%s", reason_code)
             return
         self._connected = True
+        # "#" delivers live telemetry the device pushes on its own cadence; the
+        # poll thread fills in current values (and the maintenance/bypass topics
+        # the wildcard never serves).
         client.subscribe(f"{self.device_id}/#", qos=0)
-        # The maintenance/bypass values need an exact-topic subscription to be
-        # served by the controller's broker.
-        for topic in EXACT_TOPICS:
-            client.subscribe(f"{self.device_id}/{topic}", qos=0)
+        self._poll_wake.set()  # run a full poll now
         self.hass.loop.call_soon_threadsafe(self._notify)
 
     def _on_disconnect(self, *args):
