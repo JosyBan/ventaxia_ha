@@ -12,9 +12,17 @@ This custom component integrates Vent Axia Sentinel Kinetic Advance S MVHR (mech
 
 # Supported Devices
 
-This integration relies on the [ventaxiaiot python library](https://github.com/JosyBan/ventaxiaiot). Currently it only supports this Ventaxia model:
+This integration supports two generations of controller:
 
-    Vent Axia Sentinel Kinetic Advance S
+    Vent Axia Sentinel Kinetic Advance S            (Wi-Fi module, printed Key + SSID)
+    Vent Axia Advance S (>2023) / SX / Econiq        (key-less; TLS-PSK + MQTT on 8883)
+
+The older **Advance S** (Wi-Fi module) uses the [ventaxiaiot python
+library](https://github.com/JosyBan/ventaxiaiot) and the printed Key/SSID. The newer
+**Advance S (>2023) / SX / Econiq** controllers have no printed key — they are picked
+with a separate option in the setup menu and talk MQTT-over-TLS-PSK on port 8883. See
+[Newer controllers (>2023 / SX / Econiq)](#newer-controllers-2023--sx--econiq) below
+and the [protocol notes](docs/newer_model_notes.md).
 
 **This component will set up the following platforms.**
 
@@ -72,6 +80,62 @@ After installation and restarting Home Assistant, you can configure the Ventaxia
 <img src="./advance_wifi_module.png" width="250" />
 
 Once successfully configured, the integration will automatically discover and create relevant sensor entities. You can find the full list of available entities under Settings > Devices & Services > Ventaxia integration once it's set up.
+
+## Newer controllers (>2023 / SX / Econiq)
+
+The key-less controllers (the ones with no printed Wi-Fi key) are added with the
+**"Advance S (>2023) / SX / Econiq"** option in the setup menu. They speak a real
+MQTT 3.1.1 broker over TLS-PSK on **port 8883**. Full reverse-engineering notes —
+topic map, override/mode control, TLS parameters — are in
+[`docs/newer_model_notes.md`](docs/newer_model_notes.md).
+
+You need five values:
+
+| Field | Value |
+| ----- | ----- |
+| Host | the unit's IP address on your network |
+| Port | `8883` |
+| Identity | `zirconia` (a fixed app constant — leave as-is) |
+| PSK | the per-unit key, entered as **hex** (tick *PSK is hex*) |
+| Device SSID ID | the unit's device ID, e.g. `NNNNN-XXXXX` |
+
+### Where the PSK comes from
+
+These units provision the PSK over **Bluetooth** during pairing, so there is no key
+printed on the label. The key (and the device ID) live on the controller's BLE GATT
+Auth service. The PSK characteristic only returns the real key **while the unit is in
+pairing/commissioning mode** — once provisioned it reads back as zeros ("locked"); the
+device ID stays readable.
+
+### Bluetooth auto-detect during setup
+
+When you open the newer-model form, the integration first tries to read the device ID
+and PSK straight off the unit over Home Assistant's Bluetooth stack and pre-fill them —
+so only the Host IP is left to type. A grey note on the form reports what the scan
+found:
+
+- **Scanner in range + unit in pairing mode** → **both** device ID and PSK are
+  auto-filled. Add the Host and submit.
+- **Scanner in range + already provisioned** → device ID is auto-filled; the PSK reads
+  back locked, so it stays blank with a note to put the unit in pairing mode (or enter
+  the PSK by hand).
+- **No Bluetooth adapter / nothing in range** → the form falls back to fully manual
+  entry.
+
+Requirements for auto-detect to work:
+
+1. A **working Bluetooth scanner** in range of the controller. A Raspberry Pi's weak
+   onboard radio often will not do — an **ESP32 flashed with ESPHome's
+   [`bluetooth_proxy`](https://esphome.io/components/bluetooth_proxy.html)** placed near
+   the unit is the reliable option.
+2. The proxy/adapter must allow **active connections** (`bluetooth_proxy: active: true`
+   in ESPHome) — a GATT read is needed, not just passive advertisement listening.
+3. The unit must be **advertising** (always true in pairing mode).
+
+> Note: auto-detect is a convenience for fresh installs. If you already have your PSK
+> you can always just type the five values in manually. The Bluetooth read path is new
+> and still being validated against live units; if an auto-filled value looks wrong,
+> enter it by hand and please open an issue with what you saw.
 
 ## Dashboard Card
 
