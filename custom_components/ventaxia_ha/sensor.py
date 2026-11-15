@@ -55,6 +55,7 @@ async def async_setup_entry(
         VentAxiaMqttCoordinator,
         VentAxiaMqttRemainingSensor,
         VentAxiaMqttSensor,
+        build_maintenance_sensors,
     )
 
     if isinstance(coordinator, VentAxiaMqttCoordinator):
@@ -63,6 +64,7 @@ async def async_setup_entry(
             for description in MQTT_SENSORS
         ]
         entities.append(VentAxiaMqttRemainingSensor(coordinator))
+        entities.extend(build_maintenance_sensors(coordinator))
         async_add_entities(entities)
         return
 

@@ -20,6 +20,7 @@ Confirmed against a live unit; see docs/newer_model_notes.md.
 """
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 import ssl
@@ -182,6 +183,31 @@ def treq_to_seconds(treq: str) -> int:
     return hh * 3600 + mm * 60 + ss
 
 
+def add_months(dt: datetime, months: int) -> datetime:
+    """Return dt advanced by a whole number of months (clamping the day)."""
+    total = dt.month - 1 + months
+    year = dt.year + total // 12
+    month = total % 12 + 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
+
+
+# Maintenance / bypass values are not served on the "<deviceId>/#" wildcard; the
+# controller only publishes them in response to an *exact* topic subscription.
+EXACT_TOPICS: tuple[str, ...] = (
+    "mdet/svctmr/last",
+    "mdet/svctmr/int",
+    "vent/filtertmr/last",
+    "vent/filtertmr/int",
+    "vent/filter1/typ",
+    "vent/filter2/typ",
+    "vent/sbs",
+    "vent/sbc",
+)
+# Re-subscribe to the exact topics this often (ticks) to refresh their values.
+EXACT_REFRESH_TICKS = 10  # ~5 minutes at a 30s tick
+
+
 class VentAxiaMqttCoordinator:
     """Maintain the MQTT-over-TLS-PSK connection and cache published values."""
 
@@ -205,6 +231,7 @@ class VentAxiaMqttCoordinator:
         # Boost Hold ("boost until turned off") — re-arms a timed boost.
         self.boost_hold: bool = False
         self._refresh_unsub: Callable[[], None] | None = None
+        self._tick_count: int = 0
 
     # ---- lifecycle -------------------------------------------------------
     def _build_context(self) -> ssl.SSLContext:
@@ -267,6 +294,7 @@ class VentAxiaMqttCoordinator:
 
     def _tick(self, now=None) -> None:
         """Periodic tick: re-arm a held boost and refresh countdown entities."""
+        self._tick_count += 1
         if self.boost_hold:
             end = self._local_override_end
             if (
@@ -275,6 +303,15 @@ class VentAxiaMqttCoordinator:
                 < HOLD_REARM_BUFFER_MINUTES * 60
             ):
                 self._apply_boost_chunk()
+        # Periodically re-request the exact-subscription values so maintenance
+        # and bypass readings stay fresh.
+        if (
+            self._connected
+            and self._client is not None
+            and self._tick_count % EXACT_REFRESH_TICKS == 0
+        ):
+            for topic in EXACT_TOPICS:
+                self._client.subscribe(f"{self.device_id}/{topic}", qos=0)
         self._notify()
 
     # ---- paho callbacks (run in paho's network thread) -------------------
@@ -285,6 +322,10 @@ class VentAxiaMqttCoordinator:
             return
         self._connected = True
         client.subscribe(f"{self.device_id}/#", qos=0)
+        # The maintenance/bypass values need an exact-topic subscription to be
+        # served by the controller's broker.
+        for topic in EXACT_TOPICS:
+            client.subscribe(f"{self.device_id}/{topic}", qos=0)
         self.hass.loop.call_soon_threadsafe(self._notify)
 
     def _on_disconnect(self, *args):
@@ -396,6 +437,75 @@ class VentAxiaMqttCoordinator:
         except (ValueError, AttributeError):
             return None
         return GTM_TO_MODE.get(ps)
+
+    # ---- maintenance / bypass (exact-subscription topics) ----------------
+    def _parse_local_dt(self, key: str) -> datetime | None:
+        """Parse an ISO timestamp the unit reports in its local clock (no zone)."""
+        raw = self.values.get(key)
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except (ValueError, TypeError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+        return parsed
+
+    def _int_val(self, key: str) -> int | None:
+        raw = self.values.get(key)
+        try:
+            return int(float(raw))
+        except (TypeError, ValueError):
+            return None
+
+    def _due(self, last_key: str, interval_key: str) -> datetime | None:
+        last = self._parse_local_dt(last_key)
+        months = self._int_val(interval_key)
+        if last is None or months is None:
+            return None
+        return add_months(last, months)
+
+    @property
+    def filter_due(self) -> datetime | None:
+        return self._due("vent/filtertmr/last", "vent/filtertmr/int")
+
+    @property
+    def filter_days_remaining(self) -> int | None:
+        due = self.filter_due
+        if due is None:
+            return None
+        return max(0, (due - dt_util.now()).days)
+
+    @property
+    def service_due(self) -> datetime | None:
+        return self._due("mdet/svctmr/last", "mdet/svctmr/int")
+
+    @property
+    def service_days_remaining(self) -> int | None:
+        due = self.service_due
+        if due is None:
+            return None
+        return max(0, (due - dt_util.now()).days)
+
+    def _json_val(self, key: str) -> dict | None:
+        raw = self.values.get(key)
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, AttributeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @property
+    def bypass_state(self) -> str | None:
+        """'Open' when the summer bypass is engaged, else 'Closed'."""
+        sbs = self._json_val("vent/sbs")
+        if sbs is None:
+            return None
+        # `op` is the active bypass output (0 = closed/not bypassing).
+        return "Open" if sbs.get("op") else "Closed"
 
     def set_override(self, gtm: int, treq: str) -> None:
         """Publish an airflow override to the unit and track its end locally."""
@@ -680,3 +790,143 @@ class VentAxiaMqttRemainingSensor(SensorEntity):
 
     async def async_will_remove_from_hass(self) -> None:
         self._coordinator.remove_update_callback(self._handle_update)
+
+
+class VentAxiaMqttDerivedSensor(SensorEntity):
+    """A sensor whose value is computed from the coordinator (not a raw topic)."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: VentAxiaMqttCoordinator,
+        key: str,
+        name: str,
+        value_fn: Callable[[VentAxiaMqttCoordinator], Any],
+        *,
+        device_class: SensorDeviceClass | None = None,
+        unit: str | None = None,
+        icon: str | None = None,
+        attrs_fn: Callable[[VentAxiaMqttCoordinator], dict | None] | None = None,
+        entity_category: EntityCategory | None = None,
+    ) -> None:
+        self._coordinator = coordinator
+        self._value_fn = value_fn
+        self._attrs_fn = attrs_fn
+        self._attr_unique_id = f"{coordinator.device_id}_{key}"
+        self._attr_name = name
+        if device_class is not None:
+            self._attr_device_class = device_class
+        if unit is not None:
+            self._attr_native_unit_of_measurement = unit
+        if icon is not None:
+            self._attr_icon = icon
+        if entity_category is not None:
+            self._attr_entity_category = entity_category
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return self._coordinator.available and self._value_fn(self._coordinator) is not None
+
+    @property
+    def native_value(self) -> Any:
+        return self._value_fn(self._coordinator)
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        return self._attrs_fn(self._coordinator) if self._attrs_fn else None
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
+
+
+def _filter_attrs(c: VentAxiaMqttCoordinator) -> dict | None:
+    attrs: dict[str, Any] = {}
+    last = c.values.get("vent/filtertmr/last")
+    interval = c._int_val("vent/filtertmr/int")
+    t1 = c.values.get("vent/filter1/typ")
+    t2 = c.values.get("vent/filter2/typ")
+    if last:
+        attrs["last_changed"] = last
+    if interval is not None:
+        attrs["interval_months"] = interval
+    if t1:
+        attrs["supply_filter_type"] = t1
+    if t2:
+        attrs["extract_filter_type"] = t2
+    return attrs or None
+
+
+def _service_attrs(c: VentAxiaMqttCoordinator) -> dict | None:
+    attrs: dict[str, Any] = {}
+    last = c.values.get("mdet/svctmr/last")
+    interval = c._int_val("mdet/svctmr/int")
+    if last:
+        attrs["last_service"] = last
+    if interval is not None:
+        attrs["interval_months"] = interval
+    return attrs or None
+
+
+def _bypass_attrs(c: VentAxiaMqttCoordinator) -> dict | None:
+    sbs = c._json_val("vent/sbs") or {}
+    sbc = c._json_val("vent/sbc") or {}
+    attrs: dict[str, Any] = {}
+    if "pos" in sbs:
+        attrs["position"] = sbs["pos"]
+    if "am" in sbs:
+        attrs["auto_mode"] = sbs["am"]
+    if "mod" in sbc:
+        attrs["mode"] = sbc["mod"]
+    if "ect" in sbc:
+        attrs["comfort_extract_temp"] = sbc["ect"]
+    if "ict" in sbc:
+        attrs["comfort_indoor_temp"] = sbc["ict"]
+    return attrs or None
+
+
+def build_maintenance_sensors(
+    coordinator: VentAxiaMqttCoordinator,
+) -> list[VentAxiaMqttDerivedSensor]:
+    """Filter-life, service-due and summer-bypass sensors for the newer model."""
+    return [
+        VentAxiaMqttDerivedSensor(
+            coordinator, "filter_due", "Filter Due",
+            lambda c: c.filter_due,
+            device_class=SensorDeviceClass.TIMESTAMP,
+            icon="mdi:air-filter", attrs_fn=_filter_attrs,
+        ),
+        VentAxiaMqttDerivedSensor(
+            coordinator, "filter_remaining", "Filter Life Remaining",
+            lambda c: c.filter_days_remaining,
+            device_class=SensorDeviceClass.DURATION,
+            unit=UnitOfTime.DAYS, icon="mdi:air-filter",
+        ),
+        VentAxiaMqttDerivedSensor(
+            coordinator, "service_due", "Service Due",
+            lambda c: c.service_due,
+            device_class=SensorDeviceClass.TIMESTAMP,
+            icon="mdi:wrench-clock", attrs_fn=_service_attrs,
+        ),
+        VentAxiaMqttDerivedSensor(
+            coordinator, "service_remaining", "Service Due In",
+            lambda c: c.service_days_remaining,
+            device_class=SensorDeviceClass.DURATION,
+            unit=UnitOfTime.DAYS, icon="mdi:wrench-clock",
+        ),
+        VentAxiaMqttDerivedSensor(
+            coordinator, "summer_bypass", "Summer Bypass",
+            lambda c: c.bypass_state,
+            icon="mdi:valve", attrs_fn=_bypass_attrs,
+        ),
+    ]
