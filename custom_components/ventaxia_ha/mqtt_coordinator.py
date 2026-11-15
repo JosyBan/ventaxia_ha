@@ -190,9 +190,27 @@ def add_months(dt: datetime, months: int) -> datetime:
     return dt.replace(year=year, month=month, day=day)
 
 
-# Maintenance / bypass values are not served on the "<deviceId>/#" wildcard; the
-# controller only publishes them in response to an *exact* topic subscription.
+# The controller serves a topic's *current* value immediately on an exact-topic
+# subscription. The "<deviceId>/#" wildcard only delivers a topic when the device
+# next publishes it on its own (slow, staggered) cadence, which leaves many
+# sensors "unavailable" for minutes after each (re)connect. So we exact-subscribe
+# to every topic we surface — telemetry as well as the maintenance/bypass values,
+# which the wildcard never serves at all.
 EXACT_TOPICS: tuple[str, ...] = (
+    # Telemetry
+    "io/t1",
+    "io/t3",
+    "io/erh/val",
+    "io/irh/val",
+    "mdet/pwr",
+    "mdet/wifi/sta",
+    "vent/afs/rpm",
+    "vent/afe/rpm",
+    "vent/afs/pwr",
+    "vent/afe/pwr",
+    "vent/caf",
+    "vent/cor",
+    # Maintenance / bypass (never served on the wildcard)
     "mdet/svctmr/last",
     "mdet/svctmr/int",
     "vent/filtertmr/last",
