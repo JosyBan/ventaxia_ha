@@ -175,10 +175,12 @@ REFRESH_INTERVAL = timedelta(seconds=30)
 # Auto. Must exceed the tick interval so a tick reliably fires while the override
 # is still active (the unit's own expiry can otherwise stick the airflow).
 OVERRIDE_PREEMPT_SECONDS = 40
-# The unit emits brief (~2s) caf "ps" blips while running its own schedule; the
-# Current Mode sensor only reflects a new airflow preset once it has held this
-# long, so transient Normal→Purge→Normal flaps never reach the logbook.
+# The unit emits brief (~2s) auto-purge bursts while running its own schedule. A
+# transition to Purge on the schedule path is held this long before the Current
+# Mode sensor reflects it, so those blips never flap the sensor; every other mode
+# change is reflected immediately. Purge preset code is 4 (see GTM_TO_MODE).
 CAF_DEBOUNCE_SECONDS = 6
+PURGE_PS = 4
 
 
 def minutes_to_treq(minutes: int) -> str:
@@ -466,27 +468,33 @@ class VentAxiaMqttCoordinator:
             return None
 
     def _on_caf_update(self) -> None:
-        """Debounce caf 'ps' changes (runs on the event loop).
+        """Track caf 'ps' changes for the Current Mode sensor (on the event loop).
 
-        A new preset is only committed to ``_caf_ps_stable`` after it has held
-        for ``CAF_DEBOUNCE_SECONDS``, so brief blips (e.g. a 2s Purge burst while
-        on schedule) never register as a mode change.
+        Real mode changes (Low/Normal/Boost/Max) commit immediately so the sensor
+        stays responsive. Only a transition *to Purge* is debounced, because the
+        unit emits brief (~2s) auto-purge bursts while on its schedule that would
+        otherwise flap the sensor Normal→Purge→Normal. A sustained Purge still
+        shows after ``CAF_DEBOUNCE_SECONDS``; a manual Purge goes through the
+        override path and is never affected.
         """
         ps = self._caf_ps(self.values.get("vent/caf"))
-        if ps is None:
-            return
-        if self._caf_ps_stable is None:
-            # Seed the first reading immediately (no flap to debounce yet).
-            self._caf_ps_stable = ps
-            self._notify()
-            return
-        if ps == self._caf_ps_stable:
-            # Back to (or still at) the committed value — drop any pending change.
+        if ps is None or ps == self._caf_ps_stable:
+            # Unchanged (or back to committed) — drop any pending Purge change.
             self._caf_ps_pending = None
             if self._caf_debounce_unsub is not None:
                 self._caf_debounce_unsub()
                 self._caf_debounce_unsub = None
             return
+        if ps != PURGE_PS or self._caf_ps_stable is None:
+            # Genuine mode change (or the very first reading) — reflect at once.
+            self._caf_ps_pending = None
+            if self._caf_debounce_unsub is not None:
+                self._caf_debounce_unsub()
+                self._caf_debounce_unsub = None
+            self._caf_ps_stable = ps
+            self._notify()
+            return
+        # A bare transition to Purge — hold it until it proves it's not a blip.
         if ps == self._caf_ps_pending:
             return  # already waiting on this value
         self._caf_ps_pending = ps
