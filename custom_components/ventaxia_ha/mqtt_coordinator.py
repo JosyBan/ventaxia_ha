@@ -181,6 +181,10 @@ OVERRIDE_PREEMPT_SECONDS = 40
 # change is reflected immediately. Purge preset code is 4 (see GTM_TO_MODE).
 CAF_DEBOUNCE_SECONDS = 6
 PURGE_PS = 4
+# After a mode is selected, show it in the UI immediately ("optimistic") until the
+# unit's live state catches up — or at most this long, so the UI never lies if a
+# command is dropped.
+OPTIMISTIC_SECONDS = 20
 
 
 def minutes_to_treq(minutes: int) -> str:
@@ -283,6 +287,10 @@ class VentAxiaMqttCoordinator:
         self._caf_ps_stable: int | None = None
         self._caf_ps_pending: int | None = None
         self._caf_debounce_unsub: Callable[[], None] | None = None
+        # Optimistic mode: the mode just commanded via the select, shown in the UI
+        # until the unit's live state reflects it (or OPTIMISTIC_SECONDS elapses).
+        self._commanded_gtm: int | None = None
+        self._commanded_at: float = 0.0
         self._refresh_unsub: Callable[[], None] | None = None
         self._tick_count: int = 0
         # Background value-poller (works around the broker's tiny sub table).
@@ -585,14 +593,35 @@ class VentAxiaMqttCoordinator:
         remaining = (ends - dt_util.now()).total_seconds() / 60
         return max(0, round(remaining))
 
+    def _commanded_mode(self) -> str | None:
+        """The optimistic just-commanded mode ("Auto" or a speed), or None once
+        the unit's live state matches it or OPTIMISTIC_SECONDS have elapsed."""
+        if self._commanded_gtm is None:
+            return None
+        target = (
+            "Auto" if self._commanded_gtm == 0
+            else GTM_TO_MODE.get(self._commanded_gtm)
+        )
+        if self._live_mode() == target or (
+            time.monotonic() - self._commanded_at
+        ) > OPTIMISTIC_SECONDS:
+            self._commanded_gtm = None  # reconciled (or timed out)
+            return None
+        return target
+
     @property
     def current_mode(self) -> str | None:
         """Current ventilation mode for the select.
 
-        "Auto" when the unit is following its schedule (no override), otherwise
-        the active override speed from caf 'ps'. Falls back to the raw speed
-        until the override status (vent/cor) has been received.
+        Right after a selection this is the *commanded* mode (optimistic), so the
+        UI updates instantly instead of waiting for the unit to republish its
+        state. Once the live value matches (or OPTIMISTIC_SECONDS pass) it reverts
+        to the real value: "Auto" on schedule, else the override speed from caf.
         """
+        return self._commanded_mode() or self._live_mode()
+
+    def _live_mode(self) -> str | None:
+        """The ventilation mode as last reported by the unit (no optimism)."""
         active = self._override_active
         if active is False:
             return "Auto"
@@ -614,9 +643,14 @@ class VentAxiaMqttCoordinator:
         speed is schedule-driven ("Auto") is exposed separately by the ``auto``
         property / binary sensor, so this stays a clean mode name.
         """
+        # A just-commanded speed shows immediately (optimistic); "Auto" isn't a
+        # speed, so for that we fall through to the live/debounced value.
+        cmd = self._commanded_mode()
+        if cmd and cmd != "Auto":
+            return cmd
         if self._override_active:
             # During a manual timed override show the live override speed.
-            return self.current_mode
+            return self._live_mode()
         # On schedule, use the debounced preset so brief airflow blips (a ~2s
         # Purge burst, etc.) don't flap the sensor between e.g. Normal and Purge.
         return GTM_TO_MODE.get(self._caf_ps_stable) if self._caf_ps_stable else None
@@ -734,6 +768,9 @@ class VentAxiaMqttCoordinator:
         # QoS 1 so a press issued during a brief reconnect is still delivered.
         self._client.publish(f"{self.device_id}/{OVERRIDE_TOPIC}", payload, qos=1)
         _LOGGER.debug("VentAxia override -> %s", payload)
+        # Show the commanded mode in the UI at once; reconciled in current_mode.
+        self._commanded_gtm = gtm
+        self._commanded_at = time.monotonic()
         # Track the end locally (clock-independent). gtm 0 cancels the override.
         if gtm == 0:
             self._local_override_end = None
