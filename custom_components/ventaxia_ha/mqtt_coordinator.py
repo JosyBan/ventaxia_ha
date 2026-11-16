@@ -1324,7 +1324,7 @@ def build_fan_speed_numbers(
                 VentAxiaMqttConfigNumber(
                     coordinator,
                     f"fan_speed_{mode.lower()}_{direction}",
-                    f"{mode} {label} Speed",
+                    f"Fan Speed {mode} {label}",
                     (lambda m, d: lambda c: c.fan_speed(m, d))(mode, direction),
                     (lambda m, d: lambda c, v: c.set_fan_speed(m, d, v))(
                         mode, direction
