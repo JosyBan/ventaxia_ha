@@ -266,6 +266,9 @@ class VentAxiaMqttCoordinator:
         self.data = entry.data
         self.device_id: str = entry.data[CONF_WIFI_DEVICE_ID]
         self.values: dict[str, Any] = {}
+        # Decoded JSON payloads, parsed once on receipt (see _store) so hot-path
+        # getters never re-parse the same payload.
+        self._json: dict[str, Any] = {}
         self._connected = False
         self._last_seen: float | None = None
         self._callbacks: set[Callable[[], None]] = set()
@@ -456,30 +459,47 @@ class VentAxiaMqttCoordinator:
         self._connected = False
         self.hass.loop.call_soon_threadsafe(self._notify)
 
+    def _store(self, suffix: str, payload: str) -> bool:
+        """Cache a topic's raw payload and (if JSON) its decoded form.
+
+        Returns True only when the value actually changed, so callers can skip
+        the entity fan-out for identical re-publishes (retained values, the
+        broker re-serving the same reading each poll cycle, etc.).
+        """
+        if self.values.get(suffix) == payload:
+            return False
+        self.values[suffix] = payload
+        if payload[:1] in ("{", "["):
+            try:
+                self._json[suffix] = json.loads(payload)
+            except (ValueError, TypeError):
+                self._json.pop(suffix, None)
+        elif suffix in self._json:
+            del self._json[suffix]
+        return True
+
     def _on_message(self, client, userdata, msg):
         suffix = msg.topic[len(self.device_id) + 1:] if msg.topic.startswith(
             self.device_id + "/"
         ) else msg.topic
         payload = msg.payload.decode("utf-8", "replace")
-        self.values[suffix] = payload
+        # Liveness: refresh even on an identical re-publish (proves availability).
         self._last_seen = time.monotonic()
+        if not self._store(suffix, payload):
+            return  # unchanged — nothing for the entities to re-render
         # Flatten the Wi-Fi JSON blob into a synthetic rssi topic.
         if suffix == "mdet/wifi/sta":
-            try:
-                self.values["mdet/wifi/sta#rssi"] = json.loads(payload).get("rssi")
-            except (ValueError, AttributeError):
-                pass
+            blob = self._json.get("mdet/wifi/sta")
+            if isinstance(blob, dict):
+                self.values["mdet/wifi/sta#rssi"] = blob.get("rssi")
         if suffix == "vent/caf":
             self.hass.loop.call_soon_threadsafe(self._on_caf_update)
         self.hass.loop.call_soon_threadsafe(self._notify)
 
-    @staticmethod
-    def _caf_ps(raw: Any) -> int | None:
-        """Parse the airflow preset ("ps") out of a raw caf payload."""
-        try:
-            return json.loads(raw).get("ps")
-        except (ValueError, TypeError, AttributeError):
-            return None
+    def _caf_ps(self) -> int | None:
+        """The airflow preset ("ps") from the cached caf payload."""
+        caf = self._json.get("vent/caf")
+        return caf.get("ps") if isinstance(caf, dict) else None
 
     def _on_caf_update(self) -> None:
         """Track caf 'ps' changes for the Current Mode sensor (on the event loop).
@@ -491,7 +511,7 @@ class VentAxiaMqttCoordinator:
         shows after ``CAF_DEBOUNCE_SECONDS``; a manual Purge goes through the
         override path and is never affected.
         """
-        ps = self._caf_ps(self.values.get("vent/caf"))
+        ps = self._caf_ps()
         if ps is None or ps == self._caf_ps_stable:
             # Unchanged (or back to committed) — drop any pending Purge change.
             self._caf_ps_pending = None
@@ -547,24 +567,15 @@ class VentAxiaMqttCoordinator:
         """
         if self._local_override_end is not None:
             return self._local_override_end > dt_util.now()
-        raw = self.values.get("vent/cor")
-        if raw is None:
-            return None
-        try:
-            cor = json.loads(raw)
-        except (ValueError, AttributeError):
+        cor = self._json.get("vent/cor")
+        if not isinstance(cor, dict):
             return None
         return bool(cor.get("trem"))
 
     def _device_override_end(self) -> datetime | None:
-        """Parse the unit's reported override end (vent/cor 'trem'); clock-based."""
-        raw = self.values.get("vent/cor")
-        if not raw:
-            return None
-        try:
-            trem = json.loads(raw).get("trem")
-        except (ValueError, AttributeError):
-            return None
+        """The unit's reported override end (vent/cor 'trem'); clock-based."""
+        cor = self._json.get("vent/cor")
+        trem = cor.get("trem") if isinstance(cor, dict) else None
         if not trem:
             return None
         try:
@@ -631,13 +642,9 @@ class VentAxiaMqttCoordinator:
         active = self._override_active
         if active is False:
             return "Auto"
-        raw = self.values.get("vent/caf")
-        if not raw:
+        ps = self._caf_ps()
+        if ps is None:
             return "Auto" if active is None else None
-        try:
-            ps = json.loads(raw).get("ps")
-        except (ValueError, AttributeError):
-            return None
         return GTM_TO_MODE.get(ps)
 
     @property
@@ -719,13 +726,7 @@ class VentAxiaMqttCoordinator:
         return max(0, (due - dt_util.now()).days)
 
     def _json_val(self, key: str) -> dict | None:
-        raw = self.values.get(key)
-        if not raw:
-            return None
-        try:
-            parsed = json.loads(raw)
-        except (ValueError, AttributeError):
-            return None
+        parsed = self._json.get(key)
         return parsed if isinstance(parsed, dict) else None
 
     @property
@@ -763,7 +764,7 @@ class VentAxiaMqttCoordinator:
         self._client.publish(f"{self.device_id}/io/erh/conf/wr", payload, qos=1)
         _LOGGER.debug("VentAxia humidity threshold -> %s", payload)
         # Optimistic cache update so the UI reflects the change immediately.
-        self.values["io/erh/conf"] = payload
+        self._store("io/erh/conf", payload)
         self._notify()
 
     def set_override(self, gtm: int, treq: str) -> None:
