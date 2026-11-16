@@ -171,6 +171,10 @@ BOOST_DURATION = "00:15:00"
 HOLD_CHUNK_MINUTES = 60
 HOLD_REARM_BUFFER_MINUTES = 5
 REFRESH_INTERVAL = timedelta(seconds=30)
+# How long before a timed override's tracked end to pre-empt it with an explicit
+# Auto. Must exceed the tick interval so a tick reliably fires while the override
+# is still active (the unit's own expiry can otherwise stick the airflow).
+OVERRIDE_PREEMPT_SECONDS = 40
 
 
 def minutes_to_treq(minutes: int) -> str:
@@ -387,15 +391,19 @@ class VentAxiaMqttCoordinator:
                 self._apply_boost_chunk()
         elif (
             self._local_override_end is not None
-            and self._local_override_end <= dt_util.now()
+            and (self._local_override_end - dt_util.now()).total_seconds()
+            <= OVERRIDE_PREEMPT_SECONDS
         ):
-            # A timed override has elapsed. Most modes drop back to the schedule
-            # on their own, but some (notably Purge, and after switching modes
-            # mid-override) can stick on the override airflow — leaving the unit
-            # running e.g. Purge while reporting Auto. Send an explicit Auto as
-            # the override ends to force a clean return to the schedule. It is a
-            # harmless no-op when the unit has already reverted.
-            _LOGGER.debug("VentAxia timed override elapsed; reverting to Auto")
+            # Pre-empt the unit's own override timer. Letting the unit expire the
+            # override itself occasionally leaves it stuck running the override
+            # airflow (notably Purge, or after a mid-override mode switch) while
+            # reporting Auto — the motors keep spinning and only a manual
+            # Normal -> Auto clears it. An explicit Auto (gtm 0) sent *while the
+            # override is still active* cleanly returns the unit to its schedule
+            # (verified live), whereas the same command after it has already
+            # stuck is a no-op. So cancel it ourselves a little early, which
+            # avoids the unit's flaky self-expiry entirely.
+            _LOGGER.debug("VentAxia override pre-empt: reverting to Auto")
             self.set_override(0, "00:00:00")
         self._notify()
 
