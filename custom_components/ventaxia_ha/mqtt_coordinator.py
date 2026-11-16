@@ -530,6 +530,12 @@ class VentAxiaMqttCoordinator:
         the entity fan-out for identical re-publishes (retained values, the
         broker re-serving the same reading each poll cycle, etc.).
         """
+        if payload == "":
+            # An empty publish is a retained-clear, not a reading. Some config
+            # topics (notably vent/pf1..4, the per-mode fan speeds) are served
+            # once on subscribe and then cleared with an empty message; keep the
+            # last good value instead of wiping it (which would blank entities).
+            return False
         if self.values.get(suffix) == payload:
             return False
         self.values[suffix] = payload
