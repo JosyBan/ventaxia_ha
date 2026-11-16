@@ -971,18 +971,6 @@ class VentAxiaMqttCoordinator:
             model="Sentinel Kinetic Advance S (>2023)",
         )
 
-    @property
-    def fan_speed_device_info(self) -> DeviceInfo:
-        """A sub-device grouping the per-mode fan speed controls, linked to the
-        main unit via `via_device` so they appear together in their own card."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, f"{self.device_id}_fan_speeds")},
-            name=f"VentAxia {self.device_id} Fan Mode Speeds",
-            manufacturer="Vent-Axia",
-            model="Fan Mode Speeds",
-            via_device=(DOMAIN, self.device_id),
-        )
-
     def add_update_callback(self, callback: Callable[[], None]) -> None:
         self._callbacks.add(callback)
 
@@ -1326,7 +1314,6 @@ def build_fan_speed_numbers(
     coordinator: VentAxiaMqttCoordinator,
 ) -> list[VentAxiaMqttConfigNumber]:
     """Writable per-mode extract/supply fan speeds (app 'Fan Mode Speeds')."""
-    device = coordinator.fan_speed_device_info
     numbers: list[VentAxiaMqttConfigNumber] = []
     for mode in PRESET_FLOW_TOPICS:
         for direction, label, icon in (
@@ -1347,7 +1334,6 @@ def build_fan_speed_numbers(
                     min_value=0,
                     max_value=100,
                     step=1,
-                    device=device,
                 )
             )
     return numbers
