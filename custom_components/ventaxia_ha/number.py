@@ -21,6 +21,7 @@ async def async_setup_entry(
         VentAxiaMqttCoordinator,
         VentAxiaMqttDurationNumber,
         VentAxiaMqttHumidityThresholdNumber,
+        build_config_numbers,
     )
 
     if isinstance(coordinator, VentAxiaMqttCoordinator):
@@ -28,5 +29,6 @@ async def async_setup_entry(
             [
                 VentAxiaMqttDurationNumber(coordinator),
                 VentAxiaMqttHumidityThresholdNumber(coordinator),
+                *build_config_numbers(coordinator),
             ]
         )

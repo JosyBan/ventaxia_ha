@@ -172,6 +172,16 @@ OVERRIDE_TOPIC = "vent/uo"
 MODE_TO_GTM = {"Auto": 0, "Low": 1, "Normal": 2, "Boost": 3, "Purge": 4, "Max": 5}
 GTM_TO_MODE = {1: "Low", 2: "Normal", 3: "Boost", 4: "Purge", 5: "Max"}
 MODE_OPTIONS = ["Auto", "Low", "Normal", "Boost", "Purge", "Max"]
+# Base airflow speeds offered for the "Default Airflow" setpoint (vent/daf).
+DEFAULT_AIRFLOW_OPTIONS = ["Low", "Normal", "Boost", "Max"]
+
+
+def _as_float(value: Any) -> float | None:
+    """Coerce a value to float, or None if it isn't numeric."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 # Default override duration (minutes) when a mode is selected; adjustable via the
 # Override Duration number entity. The unit reverts to its schedule afterwards.
 DEFAULT_OVERRIDE_MINUTES = 15
@@ -264,6 +274,7 @@ POLL_TOPICS_SLOW: tuple[str, ...] = (
     "vent/filter2/typ",
     "vent/sbs",
     "vent/sbc",
+    "vent/daf",
     "io/erh/conf",
 )
 POLL_BATCH = 4          # topics subscribed at once (keep well under the table size)
@@ -805,6 +816,62 @@ class VentAxiaMqttCoordinator:
         self._store("io/erh/conf", payload)
         self._notify()
 
+    # ---- summer-bypass comfort setpoints (vent/sbc) ----------------------
+    @property
+    def bypass_comfort_indoor(self) -> float | None:
+        """Indoor comfort temperature the summer bypass aims for (sbc 'ict')."""
+        sbc = self._json_val("vent/sbc")
+        return _as_float(sbc.get("ict")) if sbc else None
+
+    @property
+    def bypass_comfort_external(self) -> float | None:
+        """Outdoor/extract comfort threshold for the summer bypass (sbc 'ect')."""
+        sbc = self._json_val("vent/sbc")
+        return _as_float(sbc.get("ect")) if sbc else None
+
+    def _set_sbc_field(self, field: str, value: float) -> None:
+        """Write one summer-bypass config field, preserving the rest."""
+        if self._client is None:
+            return
+        sbc = self._json_val("vent/sbc")
+        if sbc is None:
+            return  # never write a partial config blind
+        sbc = dict(sbc)
+        sbc[field] = float(value)
+        payload = json.dumps(sbc)
+        self._client.publish(f"{self.device_id}/vent/sbc/wr", payload, qos=1)
+        _LOGGER.debug("VentAxia summer bypass -> %s", payload)
+        self._store("vent/sbc", payload)
+        self._notify()
+
+    def set_bypass_comfort_indoor(self, value: float) -> None:
+        self._set_sbc_field("ict", value)
+
+    def set_bypass_comfort_external(self, value: float) -> None:
+        self._set_sbc_field("ect", value)
+
+    # ---- default (base) airflow speed (vent/daf) -------------------------
+    @property
+    def default_airflow(self) -> str | None:
+        """The unit's base airflow speed when idle on its schedule (vent/daf)."""
+        raw = self.values.get("vent/daf")
+        try:
+            return GTM_TO_MODE.get(int(float(raw)))
+        except (TypeError, ValueError):
+            return None
+
+    def set_default_airflow(self, mode: str) -> None:
+        if self._client is None:
+            return
+        gtm = MODE_TO_GTM.get(mode)
+        if gtm is None:
+            return
+        payload = str(gtm)
+        self._client.publish(f"{self.device_id}/vent/daf/wr", payload, qos=1)
+        _LOGGER.debug("VentAxia default airflow -> %s", payload)
+        self._store("vent/daf", payload)
+        self._notify()
+
     def set_override(self, gtm: int, treq: str) -> None:
         """Publish an airflow override to the unit and track its end locally."""
         if self._client is None:
@@ -1098,6 +1165,130 @@ class VentAxiaMqttHumidityThresholdNumber(NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         self._coordinator.set_humidity_threshold(value)
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
+
+
+class VentAxiaMqttConfigNumber(NumberEntity):
+    """A writable config value computed from / written to the coordinator."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_mode = "box"
+
+    def __init__(
+        self,
+        coordinator: VentAxiaMqttCoordinator,
+        key: str,
+        name: str,
+        value_fn: Callable[[VentAxiaMqttCoordinator], float | None],
+        set_fn: Callable[[VentAxiaMqttCoordinator, float], None],
+        *,
+        icon: str | None = None,
+        unit: str | None = None,
+        min_value: float = 0,
+        max_value: float = 100,
+        step: float = 1,
+    ) -> None:
+        self._coordinator = coordinator
+        self._value_fn = value_fn
+        self._set_fn = set_fn
+        self._attr_unique_id = f"{coordinator.device_id}_{key}"
+        self._attr_name = name
+        if icon is not None:
+            self._attr_icon = icon
+        if unit is not None:
+            self._attr_native_unit_of_measurement = unit
+        self._attr_native_min_value = min_value
+        self._attr_native_max_value = max_value
+        self._attr_native_step = step
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return (
+            self._coordinator.available
+            and self._value_fn(self._coordinator) is not None
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        return self._value_fn(self._coordinator)
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._set_fn(self._coordinator, value)
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
+
+
+def build_config_numbers(
+    coordinator: VentAxiaMqttCoordinator,
+) -> list[VentAxiaMqttConfigNumber]:
+    """Writable summer-bypass comfort setpoints for the newer model."""
+    return [
+        VentAxiaMqttConfigNumber(
+            coordinator, "bypass_comfort_indoor", "Bypass Indoor Comfort Temp",
+            lambda c: c.bypass_comfort_indoor,
+            lambda c, v: c.set_bypass_comfort_indoor(v),
+            icon="mdi:home-thermometer",
+            unit=UnitOfTemperature.CELSIUS,
+            min_value=15, max_value=30, step=0.5,
+        ),
+        VentAxiaMqttConfigNumber(
+            coordinator, "bypass_comfort_external", "Bypass Outdoor Comfort Temp",
+            lambda c: c.bypass_comfort_external,
+            lambda c, v: c.set_bypass_comfort_external(v),
+            icon="mdi:sun-thermometer",
+            unit=UnitOfTemperature.CELSIUS,
+            min_value=5, max_value=25, step=0.5,
+        ),
+    ]
+
+
+class VentAxiaMqttDefaultAirflowSelect(SelectEntity):
+    """The unit's base airflow speed when idle on its schedule (vent/daf)."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Default Airflow"
+    _attr_icon = "mdi:fan-speed-1"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options = DEFAULT_AIRFLOW_OPTIONS
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_default_airflow"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return self._coordinator.available
+
+    @property
+    def current_option(self) -> str | None:
+        return self._coordinator.default_airflow
+
+    async def async_select_option(self, option: str) -> None:
+        self._coordinator.set_default_airflow(option)
 
     def _handle_update(self) -> None:
         self.async_write_ha_state()
