@@ -2,17 +2,19 @@
 
 Changes for the newer (>2023 / SX / Econiq) Advance S controller support.
 
-## 0.10.0 - 0.10.1
+## 0.10.0 - 0.10.5
 
 **New controls**
 - **Fan Mode Speeds**: the per-mode extract and supply fan speeds (the app's
   "Fan Mode Speeds" screen) are now editable from HA. Eight new number entities:
   Extract and Supply % for each of Low, Normal, Boost and Purge. Writing one
-  speed preserves the preset's other values.
+  speed preserves the preset's other values. They share a "Fan Speed" name so
+  they group together under the device's Configuration section.
 
 **Fixes**
 - Keep config values that the unit serves once and then clears (an empty
   publish no longer blanks the fan-speed entities between polls).
+- Allow stale devices to be removed from the integration.
 
 ## 0.9.0
 
