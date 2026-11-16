@@ -375,7 +375,7 @@ class VentAxiaMqttCoordinator:
             self._poll_wake.clear()
 
     def _tick(self, now=None) -> None:
-        """Periodic tick: re-arm a held boost and refresh countdown entities."""
+        """Periodic tick: re-arm a held boost, revert elapsed overrides, refresh countdowns."""
         self._tick_count += 1
         if self.boost_hold:
             end = self._local_override_end
@@ -385,6 +385,18 @@ class VentAxiaMqttCoordinator:
                 < HOLD_REARM_BUFFER_MINUTES * 60
             ):
                 self._apply_boost_chunk()
+        elif (
+            self._local_override_end is not None
+            and self._local_override_end <= dt_util.now()
+        ):
+            # A timed override has elapsed. Most modes drop back to the schedule
+            # on their own, but some (notably Purge, and after switching modes
+            # mid-override) can stick on the override airflow — leaving the unit
+            # running e.g. Purge while reporting Auto. Send an explicit Auto as
+            # the override ends to force a clean return to the schedule. It is a
+            # harmless no-op when the unit has already reverted.
+            _LOGGER.debug("VentAxia timed override elapsed; reverting to Auto")
+            self.set_override(0, "00:00:00")
         self._notify()
 
     # ---- paho callbacks (run in paho's network thread) -------------------
