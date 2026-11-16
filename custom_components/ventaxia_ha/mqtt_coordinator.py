@@ -171,6 +171,17 @@ MQTT_SENSORS: tuple[SensorEntityDescription, ...] = (
 OVERRIDE_TOPIC = "vent/uo"
 MODE_TO_GTM = {"Auto": 0, "Low": 1, "Normal": 2, "Boost": 3, "Purge": 4, "Max": 5}
 GTM_TO_MODE = {1: "Low", 2: "Normal", 3: "Boost", 4: "Purge", 5: "Max"}
+
+# Per-mode fan speeds (the app's "Fan Mode Speeds" screen). Each preset is a
+# separate topic carrying {"name", "ext", "sup"} with the extract / supply fan
+# speed as a percentage; writes go to the same topic with a "/wr" suffix.
+PRESET_FLOW_TOPICS = {
+    "Low": "vent/pf1",
+    "Normal": "vent/pf2",
+    "Boost": "vent/pf3",
+    "Purge": "vent/pf4",
+}
+PRESET_FLOW_FIELD = {"extract": "ext", "supply": "sup"}
 MODE_OPTIONS = ["Auto", "Low", "Normal", "Boost", "Purge", "Max"]
 # Base airflow speeds offered for the "Default Airflow" setpoint (vent/daf).
 DEFAULT_AIRFLOW_OPTIONS = ["Low", "Normal", "Boost", "Max"]
@@ -275,6 +286,10 @@ POLL_TOPICS_SLOW: tuple[str, ...] = (
     "vent/sbs",
     "vent/sbc",
     "vent/daf",
+    "vent/pf1",
+    "vent/pf2",
+    "vent/pf3",
+    "vent/pf4",
     "io/erh/conf",
 )
 POLL_BATCH = 4          # topics subscribed at once (keep well under the table size)
@@ -872,6 +887,31 @@ class VentAxiaMqttCoordinator:
         self._store("vent/daf", payload)
         self._notify()
 
+    # ---- per-mode fan speeds (vent/pf1..pf4) -----------------------------
+    def fan_speed(self, mode: str, direction: str) -> float | None:
+        """Extract/supply fan speed % for a mode (Low/Normal/Boost/Purge)."""
+        topic = PRESET_FLOW_TOPICS.get(mode)
+        pf = self._json_val(topic) if topic else None
+        if pf is None:
+            return None
+        return _as_float(pf.get(PRESET_FLOW_FIELD[direction]))
+
+    def set_fan_speed(self, mode: str, direction: str, value: float) -> None:
+        """Write one fan speed %, preserving the preset's other fields."""
+        if self._client is None:
+            return
+        topic = PRESET_FLOW_TOPICS.get(mode)
+        pf = self._json_val(topic) if topic else None
+        if pf is None:
+            return  # never write a partial preset blind
+        pf = dict(pf)
+        pf[PRESET_FLOW_FIELD[direction]] = float(value)
+        payload = json.dumps(pf)
+        self._client.publish(f"{self.device_id}/{topic}/wr", payload, qos=1)
+        _LOGGER.debug("VentAxia fan speed %s %s -> %s", mode, direction, payload)
+        self._store(topic, payload)
+        self._notify()
+
     def set_override(self, gtm: int, treq: str) -> None:
         """Publish an airflow override to the unit and track its end locally."""
         if self._client is None:
@@ -1260,6 +1300,35 @@ def build_config_numbers(
             min_value=5, max_value=25, step=0.5,
         ),
     ]
+
+
+def build_fan_speed_numbers(
+    coordinator: VentAxiaMqttCoordinator,
+) -> list[VentAxiaMqttConfigNumber]:
+    """Writable per-mode extract/supply fan speeds (app 'Fan Mode Speeds')."""
+    numbers: list[VentAxiaMqttConfigNumber] = []
+    for mode in PRESET_FLOW_TOPICS:
+        for direction, label, icon in (
+            ("extract", "Extract", "mdi:fan-minus"),
+            ("supply", "Supply", "mdi:fan-plus"),
+        ):
+            numbers.append(
+                VentAxiaMqttConfigNumber(
+                    coordinator,
+                    f"fan_speed_{mode.lower()}_{direction}",
+                    f"{mode} {label} Speed",
+                    (lambda m, d: lambda c: c.fan_speed(m, d))(mode, direction),
+                    (lambda m, d: lambda c, v: c.set_fan_speed(m, d, v))(
+                        mode, direction
+                    ),
+                    icon=icon,
+                    unit=PERCENTAGE,
+                    min_value=0,
+                    max_value=100,
+                    step=1,
+                )
+            )
+    return numbers
 
 
 class VentAxiaMqttDefaultAirflowSelect(SelectEntity):

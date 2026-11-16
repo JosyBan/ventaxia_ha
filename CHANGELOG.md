@@ -2,6 +2,14 @@
 
 Changes for the newer (>2023 / SX / Econiq) Advance S controller support.
 
+## 0.10.0
+
+**New controls**
+- **Fan Mode Speeds**: the per-mode extract and supply fan speeds (the app's
+  "Fan Mode Speeds" screen) are now editable from HA. Eight new number entities:
+  Extract and Supply % for each of Low, Normal, Boost and Purge. Writing one
+  speed preserves the preset's other values.
+
 ## 0.9.0
 
 **New controls**
