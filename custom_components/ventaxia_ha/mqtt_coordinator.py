@@ -50,7 +50,7 @@ from homeassistant.const import (
     UnitOfTemperature,
     UnitOfTime,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -402,8 +402,14 @@ class VentAxiaMqttCoordinator:
             self._poll_wake.wait(POLL_INTERVAL)
             self._poll_wake.clear()
 
+    @callback
     def _tick(self, now=None) -> None:
-        """Periodic tick: re-arm a held boost, revert elapsed overrides, refresh countdowns."""
+        """Periodic tick: re-arm a held boost, revert elapsed overrides, refresh countdowns.
+
+        Marked @callback so async_track_time_interval runs it on the event loop
+        (a bare function would run in an executor thread, and the entity state
+        writes it triggers via _notify are only safe on the loop).
+        """
         self._tick_count += 1
         if self.boost_hold:
             end = self._local_override_end
