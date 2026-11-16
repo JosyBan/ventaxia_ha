@@ -178,7 +178,7 @@ OVERRIDE_PREEMPT_SECONDS = 40
 # The unit emits brief (~2s) caf "ps" blips while running its own schedule; the
 # Current Mode sensor only reflects a new airflow preset once it has held this
 # long, so transient Normal→Purge→Normal flaps never reach the logbook.
-CAF_DEBOUNCE_SECONDS = 12
+CAF_DEBOUNCE_SECONDS = 6
 
 
 def minutes_to_treq(minutes: int) -> str:
