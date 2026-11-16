@@ -513,6 +513,28 @@ class VentAxiaMqttCoordinator:
             return None
         return GTM_TO_MODE.get(ps)
 
+    @property
+    def effective_mode(self) -> str | None:
+        """Human-readable mode the unit is actually running right now.
+
+        While following its own schedule this reads e.g. ``Low (Auto)`` (the
+        speed the schedule currently dictates, from caf ``ps``); during a manual
+        timed override it reads the override speed, e.g. ``Boost``.
+        """
+        speed = None
+        raw = self.values.get("vent/caf")
+        if raw:
+            try:
+                speed = GTM_TO_MODE.get(json.loads(raw).get("ps"))
+            except (ValueError, AttributeError):
+                speed = None
+        active = self._override_active
+        if active:
+            return speed or self.current_mode
+        if active is False:
+            return f"{speed} (Auto)" if speed else "Auto"
+        return speed
+
     # ---- maintenance / bypass (exact-subscription topics) ----------------
     def _parse_local_dt(self, key: str) -> datetime | None:
         """Parse an ISO timestamp the unit reports in its local clock (no zone)."""
@@ -1050,11 +1072,29 @@ def _bypass_attrs(c: VentAxiaMqttCoordinator) -> dict | None:
     return attrs or None
 
 
+def _current_mode_attrs(c: VentAxiaMqttCoordinator) -> dict | None:
+    active = c._override_active
+    attrs: dict[str, Any] = {}
+    if active is not None:
+        attrs["following"] = "override" if active else "schedule"
+    if active:
+        rem = c.override_remaining_minutes
+        if rem is not None:
+            attrs["override_remaining_min"] = rem
+    return attrs or None
+
+
 def build_maintenance_sensors(
     coordinator: VentAxiaMqttCoordinator,
 ) -> list[VentAxiaMqttDerivedSensor]:
     """Filter-life, service-due and summer-bypass sensors for the newer model."""
     return [
+        VentAxiaMqttDerivedSensor(
+            coordinator, "current_mode", "Current Mode",
+            lambda c: c.effective_mode,
+            icon="mdi:fan-auto",
+            attrs_fn=_current_mode_attrs,
+        ),
         VentAxiaMqttDerivedSensor(
             coordinator, "filter_due", "Filter Due",
             lambda c: c.filter_due,
