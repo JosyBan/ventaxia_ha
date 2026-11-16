@@ -1,0 +1,53 @@
+# Changelog
+
+Changes for the newer (>2023 / SX / Econiq) Advance S controller support.
+
+## 0.9.0
+
+**New controls**
+- **Default Airflow** select (Low / Normal / Boost / Max): sets the unit's base
+  airflow speed when it is idle on its schedule.
+- **Bypass Indoor Comfort Temp** and **Bypass Outdoor Comfort Temp** numbers:
+  the two summer bypass comfort thresholds, editable from HA (the rest of the
+  bypass config is preserved on write).
+
+## 0.8.5 - 0.8.10
+
+**Current Mode / Auto**
+- Split the old "Current Mode" into two cleaner entities: **Current Mode**
+  (just the speed: Low / Normal / Boost / Purge / Max) and a separate **Auto**
+  on/off sensor for schedule vs manual override.
+- Stopped the Current Mode sensor flapping. The unit does brief (~2 second)
+  auto purge bursts while on its schedule; those are now ignored, while real
+  mode changes still show instantly.
+
+**Responsiveness**
+- Selecting a mode now updates the UI immediately instead of lagging a few
+  seconds behind the unit.
+
+**Fixes**
+- Fixed an issue where some entities (notably the new Auto sensor) could stop
+  refreshing.
+
+**Performance**
+- Less redundant work: identical re-published values no longer re-render every
+  entity, and each payload is parsed once.
+- Lighter polling: fast telemetry is read every cycle, config/maintenance
+  values much less often.
+
+## 0.8.0 - 0.8.4
+
+- Added **Current Mode** sensor plus filter life, service due, summer bypass,
+  and IAQ (humidity boost threshold, air quality) sensors, and extract/supply
+  fan power.
+- Fixed a stuck-airflow case after a timed override (the unit could keep
+  running Purge/Boost while reporting Auto); HA now ends timed overrides itself
+  just before the unit's own timer.
+
+## 0.5.0
+
+- Override Remaining now tracked locally (the unit's reported end timestamp
+  carries no timezone and could not be trusted).
+- Controls stay pressable across brief reconnects (QoS 1, reconnect backoff).
+- Added a **Boost Hold** switch (boost until turned off), since the unit ignores
+  an indefinite boost request.
