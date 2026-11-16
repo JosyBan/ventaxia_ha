@@ -29,7 +29,6 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-import paho.mqtt.client as mqtt
 from homeassistant.components.button import ButtonEntity
 from homeassistant.components.number import NumberEntity, RestoreNumber
 from homeassistant.components.select import SelectEntity
@@ -68,6 +67,21 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# paho is imported lazily off the event loop: `import paho.mqtt.client` does a
+# blocking importlib.metadata scan (listdir) to read its version, which HA flags
+# when it happens on the loop. _load_paho() runs once in the executor.
+mqtt = None  # type: ignore[assignment]  # set by _load_paho()
+
+
+def _load_paho():
+    """Import paho.mqtt.client (blocking) and cache it in the module global."""
+    global mqtt
+    if mqtt is None:
+        import paho.mqtt.client as _paho
+
+        mqtt = _paho
+    return mqtt
 
 # Topic suffix (after "<deviceId>/") -> sensor description.
 MQTT_SENSORS: tuple[SensorEntityDescription, ...] = (
@@ -222,7 +236,8 @@ def add_months(dt: datetime, months: int) -> datetime:
 # subscribe a few topics (the broker serves their current value), then
 # unsubscribe them again, cycling through the whole list. Only a few
 # subscriptions are ever held at once, so nothing gets dropped.
-POLL_TOPICS: tuple[str, ...] = (
+# Live telemetry — fetched every cycle (these genuinely change minute-to-minute).
+POLL_TOPICS_FAST: tuple[str, ...] = (
     "io/t1",
     "io/t3",
     "io/erh/val",
@@ -235,6 +250,12 @@ POLL_TOPICS: tuple[str, ...] = (
     "vent/afe/pwr",
     "vent/caf",
     "vent/cor",
+    "vent/saq",
+)
+# Config / maintenance — change on a monthly timescale, so polled far less often
+# (every SLOW_POLL_EVERY cycles). This avoids needlessly churning the controller's
+# tiny subscription table ~8x more than necessary.
+POLL_TOPICS_SLOW: tuple[str, ...] = (
     "mdet/svctmr/last",
     "mdet/svctmr/int",
     "vent/filtertmr/last",
@@ -243,13 +264,13 @@ POLL_TOPICS: tuple[str, ...] = (
     "vent/filter2/typ",
     "vent/sbs",
     "vent/sbc",
-    "vent/saq",
     "io/erh/conf",
 )
 POLL_BATCH = 4          # topics subscribed at once (keep well under the table size)
 POLL_SERVE_WAIT = 1.2   # seconds to let the broker serve a batch before unsubscribe
 POLL_BATCH_GAP = 0.3    # pause between batches
-POLL_INTERVAL = 45      # seconds between full refresh cycles
+POLL_INTERVAL = 45      # seconds between fast refresh cycles
+SLOW_POLL_EVERY = 7     # include the slow topics every Nth cycle (~5 min)
 
 # The controller's broker occasionally drops the TLS socket; paho reconnects
 # within a second or two. Don't flap every entity to "unavailable" for those
@@ -318,6 +339,8 @@ class VentAxiaMqttCoordinator:
 
     async def async_start(self) -> None:
         """Create the client and connect (runs blocking setup in executor)."""
+        # Import paho off the loop (its import does a blocking metadata scan).
+        await self.hass.async_add_executor_job(_load_paho)
         try:
             client = mqtt.Client(
                 mqtt.CallbackAPIVersion.VERSION2,
@@ -375,17 +398,31 @@ class VentAxiaMqttCoordinator:
             except Exception:  # pragma: no cover - best effort shutdown
                 _LOGGER.debug("Error during MQTT shutdown", exc_info=True)
 
+    @staticmethod
+    def _poll_topics_for_cycle(cycle: int) -> tuple[str, ...]:
+        """Topics to fetch this cycle: fast always, slow every SLOW_POLL_EVERY-th
+        cycle (and cycle 0, so config loads promptly at startup)."""
+        if cycle % SLOW_POLL_EVERY == 0:
+            return POLL_TOPICS_FAST + POLL_TOPICS_SLOW
+        return POLL_TOPICS_FAST
+
     def _poll_loop(self) -> None:
-        """Cycle through POLL_TOPICS, briefly subscribing so the broker serves
+        """Cycle through the poll topics, briefly subscribing so the broker serves
         each value, then unsubscribing — keeping only a few subscriptions held at
-        once so the controller's small subscription table never overflows."""
+        once so the controller's small subscription table never overflows.
+
+        Fast telemetry is fetched every cycle; the slow config/maintenance topics
+        only every SLOW_POLL_EVERY cycles (and on the first cycle, so they load
+        promptly at startup)."""
+        cycle = 0
         while not self._poll_stop.is_set():
             if self._connected and self._client is not None:
                 client = self._client
-                for i in range(0, len(POLL_TOPICS), POLL_BATCH):
+                topics = self._poll_topics_for_cycle(cycle)
+                for i in range(0, len(topics), POLL_BATCH):
                     if self._poll_stop.is_set() or not self._connected:
                         break
-                    batch = POLL_TOPICS[i : i + POLL_BATCH]
+                    batch = topics[i : i + POLL_BATCH]
                     for topic in batch:
                         try:
                             client.subscribe(f"{self.device_id}/{topic}", qos=0)
@@ -401,6 +438,7 @@ class VentAxiaMqttCoordinator:
                     if self._poll_stop.wait(POLL_BATCH_GAP):
                         break
                 self.hass.loop.call_soon_threadsafe(self._notify)
+                cycle += 1
             # Wait until the next cycle, or until woken by a (re)connect.
             self._poll_wake.wait(POLL_INTERVAL)
             self._poll_wake.clear()
