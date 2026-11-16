@@ -497,3 +497,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         else PLATFORMS
     )
     return await hass.config_entries.async_unload_platforms(entry, platforms)
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: ConfigEntry, device_entry
+) -> bool:
+    """Allow a stale device (e.g. one whose entities moved) to be deleted."""
+    return True
