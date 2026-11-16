@@ -599,22 +599,26 @@ class VentAxiaMqttCoordinator:
 
     @property
     def effective_mode(self) -> str | None:
-        """Human-readable mode the unit is actually running right now.
+        """The speed the unit is actually running right now, e.g. ``Low``.
 
-        While following its own schedule this reads e.g. ``Low (Auto)`` (the
-        speed the schedule currently dictates, from caf ``ps``); during a manual
-        timed override it reads the override speed, e.g. ``Boost``.
+        During a manual timed override this is the live override speed; while
+        following the schedule it's the debounced airflow preset. Whether that
+        speed is schedule-driven ("Auto") is exposed separately by the ``auto``
+        property / binary sensor, so this stays a clean mode name.
         """
-        active = self._override_active
-        if active:
+        if self._override_active:
             # During a manual timed override show the live override speed.
             return self.current_mode
         # On schedule, use the debounced preset so brief airflow blips (a ~2s
         # Purge burst, etc.) don't flap the sensor between e.g. Normal and Purge.
-        speed = GTM_TO_MODE.get(self._caf_ps_stable) if self._caf_ps_stable else None
-        if active is False:
-            return f"{speed} (Auto)" if speed else "Auto"
-        return speed
+        return GTM_TO_MODE.get(self._caf_ps_stable) if self._caf_ps_stable else None
+
+    @property
+    def auto(self) -> bool | None:
+        """Whether the unit is following its own schedule (True) rather than a
+        manual override (False). None until the override state is known."""
+        active = self._override_active
+        return None if active is None else not active
 
     # ---- maintenance / bypass (exact-subscription topics) ----------------
     def _parse_local_dt(self, key: str) -> datetime | None:
@@ -1173,7 +1177,7 @@ def build_maintenance_sensors(
         VentAxiaMqttDerivedSensor(
             coordinator, "current_mode", "Current Mode",
             lambda c: c.effective_mode,
-            icon="mdi:fan-auto",
+            icon="mdi:fan",
             attrs_fn=_current_mode_attrs,
         ),
         VentAxiaMqttDerivedSensor(
