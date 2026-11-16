@@ -52,7 +52,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
@@ -175,6 +175,10 @@ REFRESH_INTERVAL = timedelta(seconds=30)
 # Auto. Must exceed the tick interval so a tick reliably fires while the override
 # is still active (the unit's own expiry can otherwise stick the airflow).
 OVERRIDE_PREEMPT_SECONDS = 40
+# The unit emits brief (~2s) caf "ps" blips while running its own schedule; the
+# Current Mode sensor only reflects a new airflow preset once it has held this
+# long, so transient Normal→Purge→Normal flaps never reach the logbook.
+CAF_DEBOUNCE_SECONDS = 12
 
 
 def minutes_to_treq(minutes: int) -> str:
@@ -270,6 +274,13 @@ class VentAxiaMqttCoordinator:
         self._local_override_end: datetime | None = None
         # Boost Hold ("boost until turned off") — re-arms a timed boost.
         self.boost_hold: bool = False
+        # Debounced airflow preset for the Current Mode sensor. The unit emits
+        # brief (~2s) caf "ps" blips (e.g. a momentary Purge burst) while in
+        # Auto; surfacing each one spams the logbook with Normal→Purge→Normal.
+        # We only commit a new preset after it has held for CAF_DEBOUNCE_SECONDS.
+        self._caf_ps_stable: int | None = None
+        self._caf_ps_pending: int | None = None
+        self._caf_debounce_unsub: Callable[[], None] | None = None
         self._refresh_unsub: Callable[[], None] | None = None
         self._tick_count: int = 0
         # Background value-poller (works around the broker's tiny sub table).
@@ -334,6 +345,9 @@ class VentAxiaMqttCoordinator:
         if self._refresh_unsub is not None:
             self._refresh_unsub()
             self._refresh_unsub = None
+        if self._caf_debounce_unsub is not None:
+            self._caf_debounce_unsub()
+            self._caf_debounce_unsub = None
         self._poll_stop.set()
         self._poll_wake.set()
         if self._poll_thread is not None:
@@ -439,7 +453,57 @@ class VentAxiaMqttCoordinator:
                 self.values["mdet/wifi/sta#rssi"] = json.loads(payload).get("rssi")
             except (ValueError, AttributeError):
                 pass
+        if suffix == "vent/caf":
+            self.hass.loop.call_soon_threadsafe(self._on_caf_update)
         self.hass.loop.call_soon_threadsafe(self._notify)
+
+    @staticmethod
+    def _caf_ps(raw: Any) -> int | None:
+        """Parse the airflow preset ("ps") out of a raw caf payload."""
+        try:
+            return json.loads(raw).get("ps")
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    def _on_caf_update(self) -> None:
+        """Debounce caf 'ps' changes (runs on the event loop).
+
+        A new preset is only committed to ``_caf_ps_stable`` after it has held
+        for ``CAF_DEBOUNCE_SECONDS``, so brief blips (e.g. a 2s Purge burst while
+        on schedule) never register as a mode change.
+        """
+        ps = self._caf_ps(self.values.get("vent/caf"))
+        if ps is None:
+            return
+        if self._caf_ps_stable is None:
+            # Seed the first reading immediately (no flap to debounce yet).
+            self._caf_ps_stable = ps
+            self._notify()
+            return
+        if ps == self._caf_ps_stable:
+            # Back to (or still at) the committed value — drop any pending change.
+            self._caf_ps_pending = None
+            if self._caf_debounce_unsub is not None:
+                self._caf_debounce_unsub()
+                self._caf_debounce_unsub = None
+            return
+        if ps == self._caf_ps_pending:
+            return  # already waiting on this value
+        self._caf_ps_pending = ps
+        if self._caf_debounce_unsub is not None:
+            self._caf_debounce_unsub()
+        self._caf_debounce_unsub = async_call_later(
+            self.hass, CAF_DEBOUNCE_SECONDS, self._commit_caf
+        )
+
+    def _commit_caf(self, _now=None) -> None:
+        """Promote a pending caf preset to stable once it has held long enough."""
+        self._caf_debounce_unsub = None
+        if self._caf_ps_pending is None:
+            return
+        self._caf_ps_stable = self._caf_ps_pending
+        self._caf_ps_pending = None
+        self._notify()
 
     # ---- helpers ---------------------------------------------------------
     def _notify(self) -> None:
@@ -541,16 +605,13 @@ class VentAxiaMqttCoordinator:
         speed the schedule currently dictates, from caf ``ps``); during a manual
         timed override it reads the override speed, e.g. ``Boost``.
         """
-        speed = None
-        raw = self.values.get("vent/caf")
-        if raw:
-            try:
-                speed = GTM_TO_MODE.get(json.loads(raw).get("ps"))
-            except (ValueError, AttributeError):
-                speed = None
         active = self._override_active
         if active:
-            return speed or self.current_mode
+            # During a manual timed override show the live override speed.
+            return self.current_mode
+        # On schedule, use the debounced preset so brief airflow blips (a ~2s
+        # Purge burst, etc.) don't flap the sensor between e.g. Normal and Purge.
+        speed = GTM_TO_MODE.get(self._caf_ps_stable) if self._caf_ps_stable else None
         if active is False:
             return f"{speed} (Auto)" if speed else "Auto"
         return speed
