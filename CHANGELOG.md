@@ -2,6 +2,16 @@
 
 Changes for the newer (>2023 / SX / Econiq) Advance S controller support.
 
+## 0.10.6
+
+**Fixes**
+- Stop brief self-initiated mode blips flapping the entities. Some units start
+  a ~2 second Boost "override" on their own and drop straight back to Auto,
+  which flipped Ventilation Mode, Current Mode and Auto back and forth. Any
+  change the unit makes by itself now has to hold for 6 seconds before HA shows
+  it; modes chosen from HA still update instantly, and returning to Auto is
+  never delayed.
+
 ## 0.10.0 - 0.10.5
 
 **New controls**

@@ -210,12 +210,13 @@ REFRESH_INTERVAL = timedelta(seconds=30)
 # Auto. Must exceed the tick interval so a tick reliably fires while the override
 # is still active (the unit's own expiry can otherwise stick the airflow).
 OVERRIDE_PREEMPT_SECONDS = 40
-# The unit emits brief (~2s) auto-purge bursts while running its own schedule. A
-# transition to Purge on the schedule path is held this long before the Current
-# Mode sensor reflects it, so those blips never flap the sensor; every other mode
-# change is reflected immediately. Purge preset code is 4 (see GTM_TO_MODE).
+# Some units emit brief (~2s) self-initiated blips: a momentary Purge burst on
+# the schedule, or a short Boost "override" (vent/cor trem set for ~2s) that then
+# reverts to Auto. Any change the *unit* makes on its own must hold this long
+# before HA reflects it, so those blips never flap Current Mode / Ventilation
+# Mode / Auto. Changes commanded from HA show instantly (optimistic path), and
+# returning to the schedule is never delayed.
 CAF_DEBOUNCE_SECONDS = 6
-PURGE_PS = 4
 # After a mode is selected, show it in the UI immediately ("optimistic") until the
 # unit's live state catches up — or at most this long, so the UI never lies if a
 # command is dropped.
@@ -337,6 +338,12 @@ class VentAxiaMqttCoordinator:
         self._caf_ps_stable: int | None = None
         self._caf_ps_pending: int | None = None
         self._caf_debounce_unsub: Callable[[], None] | None = None
+        # Debounced unit-initiated override (vent/cor trem). A ~2s self-initiated
+        # override blip must not flip Auto/Ventilation Mode; only one that holds
+        # for CAF_DEBOUNCE_SECONDS is treated as a real override.
+        self._cor_seen: bool = False
+        self._cor_confirmed: bool = False
+        self._cor_debounce_unsub: Callable[[], None] | None = None
         # Optimistic mode: the mode just commanded via the select, shown in the UI
         # until the unit's live state reflects it (or OPTIMISTIC_SECONDS elapses).
         self._commanded_gtm: int | None = None
@@ -410,6 +417,9 @@ class VentAxiaMqttCoordinator:
         if self._caf_debounce_unsub is not None:
             self._caf_debounce_unsub()
             self._caf_debounce_unsub = None
+        if self._cor_debounce_unsub is not None:
+            self._cor_debounce_unsub()
+            self._cor_debounce_unsub = None
         self._poll_stop.set()
         self._poll_wake.set()
         if self._poll_thread is not None:
@@ -564,6 +574,8 @@ class VentAxiaMqttCoordinator:
                 self.values["mdet/wifi/sta#rssi"] = blob.get("rssi")
         if suffix == "vent/caf":
             self.hass.loop.call_soon_threadsafe(self._on_caf_update)
+        if suffix == "vent/cor":
+            self.hass.loop.call_soon_threadsafe(self._on_cor_update)
         self.hass.loop.call_soon_threadsafe(self._notify)
 
     def _caf_ps(self) -> int | None:
@@ -574,12 +586,13 @@ class VentAxiaMqttCoordinator:
     def _on_caf_update(self) -> None:
         """Track caf 'ps' changes for the Current Mode sensor (on the event loop).
 
-        Real mode changes (Low/Normal/Boost/Max) commit immediately so the sensor
-        stays responsive. Only a transition *to Purge* is debounced, because the
-        unit emits brief (~2s) auto-purge bursts while on its schedule that would
-        otherwise flap the sensor Normal→Purge→Normal. A sustained Purge still
-        shows after ``CAF_DEBOUNCE_SECONDS``; a manual Purge goes through the
-        override path and is never affected.
+        Every change the unit makes on its own is held for
+        ``CAF_DEBOUNCE_SECONDS`` before it is committed, because some units emit
+        brief (~2s) Purge/Boost bursts that would otherwise flap the sensor
+        (e.g. Low→Boost→Low). Modes commanded from HA show instantly through the
+        optimistic path, and during an override the live speed is used, so only
+        unprompted schedule changes see the short delay. The very first reading
+        is committed at once.
         """
         ps = self._caf_ps()
         if ps is None or ps == self._caf_ps_stable:
@@ -589,8 +602,8 @@ class VentAxiaMqttCoordinator:
                 self._caf_debounce_unsub()
                 self._caf_debounce_unsub = None
             return
-        if ps != PURGE_PS or self._caf_ps_stable is None:
-            # Genuine mode change (or the very first reading) — reflect at once.
+        if self._caf_ps_stable is None:
+            # The very first reading — reflect at once.
             self._caf_ps_pending = None
             if self._caf_debounce_unsub is not None:
                 self._caf_debounce_unsub()
@@ -598,7 +611,7 @@ class VentAxiaMqttCoordinator:
             self._caf_ps_stable = ps
             self._notify()
             return
-        # A bare transition to Purge — hold it until it proves it's not a blip.
+        # A unit-initiated change — hold it until it proves it's not a blip.
         if ps == self._caf_ps_pending:
             return  # already waiting on this value
         self._caf_ps_pending = ps
@@ -616,6 +629,42 @@ class VentAxiaMqttCoordinator:
         self._caf_ps_stable = self._caf_ps_pending
         self._caf_ps_pending = None
         self._notify()
+
+    def _on_cor_update(self) -> None:
+        """Debounce unit-initiated overrides (vent/cor 'trem'), on the event loop.
+
+        Some units start a ~2s Boost "override" on their own and then drop back
+        to Auto; surfacing it flips Auto off/on and Ventilation Mode to Boost and
+        back. An override reported by the unit only counts once it has held for
+        ``CAF_DEBOUNCE_SECONDS``; an override ending is reflected at once. The
+        first reading after startup is trusted immediately, and overrides
+        started from HA use the local tracking path, so neither is delayed.
+        """
+        cor = self._json.get("vent/cor")
+        active = bool(cor.get("trem")) if isinstance(cor, dict) else False
+        first = not self._cor_seen
+        self._cor_seen = True
+        if not active or first:
+            if self._cor_debounce_unsub is not None:
+                self._cor_debounce_unsub()
+                self._cor_debounce_unsub = None
+            if self._cor_confirmed != active:
+                self._cor_confirmed = active
+                self._notify()
+            return
+        if self._cor_confirmed or self._cor_debounce_unsub is not None:
+            return  # already active, or already waiting on it
+        self._cor_debounce_unsub = async_call_later(
+            self.hass, CAF_DEBOUNCE_SECONDS, self._commit_cor
+        )
+
+    def _commit_cor(self, _now=None) -> None:
+        """Treat a unit-reported override as real once it has held long enough."""
+        self._cor_debounce_unsub = None
+        cor = self._json.get("vent/cor")
+        if isinstance(cor, dict) and cor.get("trem"):
+            self._cor_confirmed = True
+            self._notify()
 
     # ---- helpers ---------------------------------------------------------
     def _notify(self) -> None:
@@ -640,7 +689,8 @@ class VentAxiaMqttCoordinator:
         cor = self._json.get("vent/cor")
         if not isinstance(cor, dict):
             return None
-        return bool(cor.get("trem"))
+        # Debounced: a brief unit-initiated override blip doesn't count.
+        return self._cor_confirmed and bool(cor.get("trem"))
 
     def _device_override_end(self) -> datetime | None:
         """The unit's reported override end (vent/cor 'trem'); clock-based."""
