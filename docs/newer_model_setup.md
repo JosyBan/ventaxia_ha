@@ -26,6 +26,15 @@ option and the main [README](../README.md).
 Find the **Host** from your router's DHCP list (look for the Vent‑Axia / ESP
 device), or set a DHCP reservation so it never changes.
 
+> **Put the unit on your home Wi‑Fi first.**
+> - It only joins **2.4 GHz** Wi‑Fi. 5 GHz does not work.
+> - Connect it to your normal home network in the Vent‑Axia Connect app.
+> - Do not leave it on its own setup Wi‑Fi (access point mode).
+> - Only then does your router give it an IP address.
+> - That IP address is the **Host** you type in.
+> - To find the IP: open the Vent‑Axia app, go to **Settings → Wi‑Fi settings**.
+> - It is also shown in your router's device list.
+
 The **Device ID** and **PSK** come off the unit itself — see the next section.
 
 ---
@@ -72,6 +81,27 @@ read it:
    `638ff62c-3823-4e0f-8179-1695c46ee8ad` (`tlsKey`) on the Auth service
    `e6834e4b-7b3a-48e6-91e4-f1d005f564d3`. The bytes are the PSK — enter them as
    hex. The Device ID is the characteristic `673de933-963b-4298-bfc1-b0ccdada690a`.
+
+**Pick the right characteristic — there are look‑alikes.** Reading the unit over
+BLE shows several similar values and it is easy to grab the wrong one. Only
+`638ff62c-…` is the PSK (thanks to [@Stepyon](https://github.com/Stepyon) and
+[@bekraupov](https://github.com/bekraupov) for confirming on the Econiq). The
+example values below are made‑up, in the real format:
+
+| Characteristic UUID | Length | Example (nRF "hex") | What it is |
+|---|---|---|---|
+| `638ff62c-3823-4e0f-8179-1695c46ee8ad` | 8 bytes | `4F-1A-9C-72-D3-08-6B-E5` | **PSK — use this** |
+| `98faf8a5-1ee6-4b0c-911e-dc37bff5206f` | 16 bytes | `7D-20-B4-…` (random‑looking) | **Not** the PSK — looks like one, but the handshake fails |
+| `673de933-963b-4298-bfc1-b0ccdada690a` | 11 chars | `ABCDE-FGHIJ` | Device ID / serial |
+
+- The PSK is **8 bytes (16 hex characters)**, not 16 bytes.
+- Enter it with the dashes removed, e.g. `4F1A9C72D3086BE5`, and tick **PSK is hex**.
+- It reads as non‑zero **only in pairing mode** (otherwise all zeros / locked).
+- Wrong‑PSK symptom in the HA log — the unit is reachable and speaking TLS‑PSK,
+  but the key is wrong:
+  ```
+  ssl.SSLError: [SSL: SSLV3_ALERT_BAD_RECORD_MAC]
+  ```
 
 ### From the app's data
 
