@@ -595,6 +595,18 @@ class VentAxiaMqttCoordinator:
         is committed at once.
         """
         ps = self._caf_ps()
+        if ps != self._caf_ps_stable:
+            # Log every unit-initiated preset change (e.g. a brief Boost/Purge
+            # burst) with the humidity and override context, so a user chasing
+            # unexpected boosting can see it in the debug log — the integration
+            # otherwise only logs commands it *sends*, never what the unit does.
+            _LOGGER.debug(
+                "VentAxia caf preset %s -> %s (extract RH=%s, cor=%s, caf=%s)",
+                self._caf_ps_stable, ps,
+                self.values.get("io/erh/val"),
+                self.values.get("vent/cor"),
+                self.values.get("vent/caf"),
+            )
         if ps is None or ps == self._caf_ps_stable:
             # Unchanged (or back to committed) — drop any pending Purge change.
             self._caf_ps_pending = None

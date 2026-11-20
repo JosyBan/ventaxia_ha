@@ -2,6 +2,20 @@
 
 Changes for the newer (>2023 / SX / Econiq) Advance S controller support.
 
+## 0.11.0
+
+**Diagnostics**
+- Added a **Download Diagnostics** button on the integration page. It dumps the
+  full cache of unit topic values (`vent/caf`, `vent/cor`, `io/erh/conf`,
+  `io/erh/val`, …) plus derived state (current/effective mode, humidity
+  threshold, availability), with the PSK, device ID, host and Wi-Fi SSID/IP
+  redacted. Useful for investigating unexpected unit behaviour.
+- The debug log now records every preset change the **unit** makes on its own
+  (e.g. a brief Boost/Purge burst), together with the extract humidity and
+  override state at that moment. Previously only commands sent *by* the
+  integration were logged, so unit-initiated boosting left no trace. Enable
+  debug logging for `custom_components.ventaxia_ha` to capture it.
+
 ## 0.10.6
 
 **Fixes**
