@@ -210,13 +210,13 @@ REFRESH_INTERVAL = timedelta(seconds=30)
 # Auto. Must exceed the tick interval so a tick reliably fires while the override
 # is still active (the unit's own expiry can otherwise stick the airflow).
 OVERRIDE_PREEMPT_SECONDS = 40
-# Some units emit brief (~2s) self-initiated blips: a momentary Purge burst on
+# Some units emit brief (~2-20s) self-initiated blips: a momentary Purge burst on
 # the schedule, or a short Boost "override" (vent/cor trem set for ~2s) that then
 # reverts to Auto. Any change the *unit* makes on its own must hold this long
 # before HA reflects it, so those blips never flap Current Mode / Ventilation
 # Mode / Auto. Changes commanded from HA show instantly (optimistic path), and
 # returning to the schedule is never delayed.
-CAF_DEBOUNCE_SECONDS = 6
+CAF_DEBOUNCE_SECONDS = 30
 # After a mode is selected, show it in the UI immediately ("optimistic") until the
 # unit's live state catches up — or at most this long, so the UI never lies if a
 # command is dropped.
@@ -641,6 +641,7 @@ class VentAxiaMqttCoordinator:
             self.hass, CAF_DEBOUNCE_SECONDS, self._commit_caf
         )
 
+    @callback
     def _commit_caf(self, _now=None) -> None:
         """Promote a pending caf preset to stable once it has held long enough."""
         self._caf_debounce_unsub = None
@@ -678,6 +679,7 @@ class VentAxiaMqttCoordinator:
             self.hass, CAF_DEBOUNCE_SECONDS, self._commit_cor
         )
 
+    @callback
     def _commit_cor(self, _now=None) -> None:
         """Treat a unit-reported override as real once it has held long enough."""
         self._cor_debounce_unsub = None

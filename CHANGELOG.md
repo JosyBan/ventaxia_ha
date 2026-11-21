@@ -11,6 +11,13 @@ Changes for the newer (>2023 / SX / Econiq) Advance S controller support.
 - The mode you picked stays on screen for up to 30 seconds (was 20) while
   waiting for the unit to confirm. Together these stop the display bouncing
   back, e.g. Auto → Boost → Auto, after ending a boost.
+- The unit's own short Boost/Normal bursts (seen lasting up to ~20 seconds) no
+  longer flip Ventilation Mode, Current Mode and Auto. A change the unit makes
+  by itself now has to hold for 30 seconds (was 6) before HA shows it. Modes
+  you pick from HA still show at once, and going back to Auto is never delayed.
+- Fixed a thread-safety bug: those delayed updates were written from a
+  background thread, which HA warned about in the log and which could make
+  the entities show the wrong state.
 
 ## 0.11.0
 
