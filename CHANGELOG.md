@@ -8,6 +8,9 @@ Changes for the newer (>2023 / SX / Econiq) Advance S controller support.
 - The **Auto** on/off sensor now changes as soon as you pick a mode, like
   Ventilation Mode and Current Mode do. Before, it could stay "off" for up to
   30 seconds after picking Auto.
+- **Override Remaining** survives an HA restart. Before, restarting during a
+  boost reset it to 0 although the unit kept boosting. The end time is now
+  saved and restored, and dropped if the unit has left the override meanwhile.
 
 ## 0.11.2
 

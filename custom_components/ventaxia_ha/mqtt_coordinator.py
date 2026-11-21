@@ -53,6 +53,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .client import decode_psk
@@ -333,6 +334,14 @@ class VentAxiaMqttCoordinator:
         # it cannot be trusted for a countdown when the unit's clock differs from
         # HA's. We know exactly what duration we asked for, so we track it here.
         self._local_override_end: datetime | None = None
+        # The local override end is saved so a restart mid-override keeps the
+        # countdown (the unit's own 'trem' is a heartbeat, not an end time).
+        self._override_store: Store = Store(
+            hass, 1, f"{DOMAIN}.{entry.entry_id}.override"
+        )
+        # True while _local_override_end came from storage and the unit hasn't
+        # yet confirmed the override is still running.
+        self._override_restored = False
         # Boost Hold ("boost until turned off") — re-arms a timed boost.
         self.boost_hold: bool = False
         # Debounced airflow preset for the Current Mode sensor. The unit emits
@@ -382,6 +391,7 @@ class VentAxiaMqttCoordinator:
         """Create the client and connect (runs blocking setup in executor)."""
         # Import paho off the loop (its import does a blocking metadata scan).
         await self.hass.async_add_executor_job(_load_paho)
+        await self._restore_override_end()
         try:
             client = mqtt.Client(
                 mqtt.CallbackAPIVersion.VERSION2,
@@ -678,6 +688,14 @@ class VentAxiaMqttCoordinator:
         active = bool(cor.get("trem")) if isinstance(cor, dict) else False
         first = not self._cor_seen
         self._cor_seen = True
+        if self._override_restored:
+            # A saved end from before a restart only counts if the unit is still
+            # in that override; if it ended meanwhile (e.g. from the wall
+            # controller), forget it.
+            self._override_restored = False
+            if not active:
+                self._local_override_end = None
+                self._save_override_end()
         if not active or first:
             if self._cor_debounce_unsub is not None:
                 self._cor_debounce_unsub()
@@ -1011,6 +1029,26 @@ class VentAxiaMqttCoordinator:
         self._store(topic, payload)
         self._notify()
 
+    async def _restore_override_end(self) -> None:
+        """Reload a saved override end so Override Remaining survives a restart."""
+        try:
+            data = await self._override_store.async_load()
+        except Exception:  # noqa: BLE001 - a bad file must not break setup
+            _LOGGER.debug("VentAxia: could not load saved override end", exc_info=True)
+            return
+        raw = data.get("end") if isinstance(data, dict) else None
+        end = dt_util.parse_datetime(raw) if isinstance(raw, str) else None
+        if end is not None and end > dt_util.now():
+            self._local_override_end = end
+            self._override_restored = True
+            _LOGGER.debug("VentAxia: restored override end %s", end.isoformat())
+
+    def _save_override_end(self) -> None:
+        end = self._local_override_end
+        self._override_store.async_delay_save(
+            lambda: {"end": end.isoformat() if end else None}, 1
+        )
+
     def set_override(self, gtm: int, treq: str) -> None:
         """Publish an airflow override to the unit and track its end locally."""
         if self._client is None:
@@ -1031,6 +1069,8 @@ class VentAxiaMqttCoordinator:
             self._local_override_end = (
                 dt_util.now() + timedelta(seconds=secs) if secs > 0 else None
             )
+        self._override_restored = False
+        self._save_override_end()
         self._schedule_command_repoll()
         self._notify()
 
