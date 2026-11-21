@@ -220,7 +220,11 @@ CAF_DEBOUNCE_SECONDS = 6
 # After a mode is selected, show it in the UI immediately ("optimistic") until the
 # unit's live state catches up — or at most this long, so the UI never lies if a
 # command is dropped.
-OPTIMISTIC_SECONDS = 20
+OPTIMISTIC_SECONDS = 30
+# After sending a mode command, re-read the unit after these delays (seconds)
+# instead of waiting up to POLL_INTERVAL, so the UI confirms the real state
+# within the optimistic window rather than bouncing back to stale values.
+COMMAND_REPOLL_DELAYS = (3, 12)
 
 
 def minutes_to_treq(minutes: int) -> str:
@@ -344,6 +348,7 @@ class VentAxiaMqttCoordinator:
         self._cor_seen: bool = False
         self._cor_confirmed: bool = False
         self._cor_debounce_unsub: Callable[[], None] | None = None
+        self._repoll_unsubs: list[Callable[[], None]] = []
         # Optimistic mode: the mode just commanded via the select, shown in the UI
         # until the unit's live state reflects it (or OPTIMISTIC_SECONDS elapses).
         self._commanded_gtm: int | None = None
@@ -420,6 +425,9 @@ class VentAxiaMqttCoordinator:
         if self._cor_debounce_unsub is not None:
             self._cor_debounce_unsub()
             self._cor_debounce_unsub = None
+        for unsub in self._repoll_unsubs:
+            unsub()
+        self._repoll_unsubs.clear()
         self._poll_stop.set()
         self._poll_wake.set()
         if self._poll_thread is not None:
@@ -999,7 +1007,24 @@ class VentAxiaMqttCoordinator:
             self._local_override_end = (
                 dt_util.now() + timedelta(seconds=secs) if secs > 0 else None
             )
+        self._schedule_command_repoll()
         self._notify()
+
+    def _schedule_command_repoll(self) -> None:
+        """Re-read the unit shortly after a command instead of waiting for the
+        next regular poll, so its confirmation lands inside the optimistic
+        window. Earlier pending re-polls are replaced by the new ones."""
+        for unsub in self._repoll_unsubs:
+            unsub()
+        self._repoll_unsubs = [
+            async_call_later(self.hass, delay, self._wake_poll)
+            for delay in COMMAND_REPOLL_DELAYS
+        ]
+
+    @callback
+    def _wake_poll(self, _now=None) -> None:
+        """Start a poll cycle now (the poll thread is waiting on this event)."""
+        self._poll_wake.set()
 
     def _apply_boost_chunk(self) -> None:
         """(Re)issue a timed boost chunk to keep Boost Hold alive."""

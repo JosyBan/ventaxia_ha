@@ -2,6 +2,16 @@
 
 Changes for the newer (>2023 / SX / Econiq) Advance S controller support.
 
+## 0.11.1
+
+**Fixes**
+- After you pick a mode, HA now re-reads the unit 3 and 12 seconds later
+  instead of waiting up to 45 seconds for the next regular check. The unit's
+  confirmation arrives much sooner.
+- The mode you picked stays on screen for up to 30 seconds (was 20) while
+  waiting for the unit to confirm. Together these stop the display bouncing
+  back, e.g. Auto → Boost → Auto, after ending a boost.
+
 ## 0.11.0
 
 **Diagnostics**
