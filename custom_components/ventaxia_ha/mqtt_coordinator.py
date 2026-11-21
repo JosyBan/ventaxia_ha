@@ -831,6 +831,10 @@ class VentAxiaMqttCoordinator:
     def auto(self) -> bool | None:
         """Whether the unit is following its own schedule (True) rather than a
         manual override (False). None until the override state is known."""
+        # Just-commanded: follow the command at once, like the select does.
+        cmd = self._commanded_mode()
+        if cmd is not None:
+            return cmd == "Auto"
         active = self._override_active
         return None if active is None else not active
 

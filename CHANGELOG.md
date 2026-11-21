@@ -2,6 +2,13 @@
 
 Changes for the newer (>2023 / SX / Econiq) Advance S controller support.
 
+## 0.11.3
+
+**Fixes**
+- The **Auto** on/off sensor now changes as soon as you pick a mode, like
+  Ventilation Mode and Current Mode do. Before, it could stay "off" for up to
+  30 seconds after picking Auto.
+
 ## 0.11.2
 
 **Fixes**
