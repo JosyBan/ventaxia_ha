@@ -2,6 +2,13 @@
 
 Changes for the newer (>2023 / SX / Econiq) Advance S controller support.
 
+## 0.11.4
+
+**Fixes**
+- When the unit's own boost ends (e.g. its humidity boost), Current Mode no
+  longer flicks back to Boost for 30 seconds. The unit sends its new speed a
+  few seconds before it says the boost is over; HA now uses it at once.
+
 ## 0.11.3
 
 **Fixes**

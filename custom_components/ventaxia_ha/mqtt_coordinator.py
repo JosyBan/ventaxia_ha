@@ -703,8 +703,18 @@ class VentAxiaMqttCoordinator:
             if self._cor_confirmed != active:
                 if self._cor_confirmed and not active:
                     # A real override just ended: the preset change back to the
-                    # schedule that follows is expected, not a burst.
+                    # schedule is expected, not a burst. The unit often sends it
+                    # a few seconds *before* clearing the override, so take the
+                    # current preset now instead of letting the debounce hold an
+                    # old one (which showed e.g. Boost for 30s after the end).
                     self._caf_trust_until = time.monotonic() + OPTIMISTIC_SECONDS
+                    ps = self._caf_ps()
+                    if ps is not None:
+                        self._caf_ps_stable = ps
+                    self._caf_ps_pending = None
+                    if self._caf_debounce_unsub is not None:
+                        self._caf_debounce_unsub()
+                        self._caf_debounce_unsub = None
                 self._cor_confirmed = active
                 self._notify()
             return
