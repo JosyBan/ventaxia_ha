@@ -341,6 +341,9 @@ class VentAxiaMqttCoordinator:
         # We only commit a new preset after it has held for CAF_DEBOUNCE_SECONDS.
         self._caf_ps_stable: int | None = None
         self._caf_ps_pending: int | None = None
+        # Until this monotonic time, caf preset changes are expected (a mode
+        # was just commanded, or an override just ended) and skip the debounce.
+        self._caf_trust_until: float = 0.0
         self._caf_debounce_unsub: Callable[[], None] | None = None
         # Debounced unit-initiated override (vent/cor trem). A ~2s self-initiated
         # override blip must not flip Auto/Ventilation Mode; only one that holds
@@ -631,6 +634,16 @@ class VentAxiaMqttCoordinator:
             self._caf_ps_stable = ps
             self._notify()
             return
+        if time.monotonic() < self._caf_trust_until:
+            # Expected change (we just sent a command, or an override just
+            # ended): the unit is following it, not bursting — show it now.
+            self._caf_ps_pending = None
+            if self._caf_debounce_unsub is not None:
+                self._caf_debounce_unsub()
+                self._caf_debounce_unsub = None
+            self._caf_ps_stable = ps
+            self._notify()
+            return
         # A unit-initiated change — hold it until it proves it's not a blip.
         if ps == self._caf_ps_pending:
             return  # already waiting on this value
@@ -670,6 +683,10 @@ class VentAxiaMqttCoordinator:
                 self._cor_debounce_unsub()
                 self._cor_debounce_unsub = None
             if self._cor_confirmed != active:
+                if self._cor_confirmed and not active:
+                    # A real override just ended: the preset change back to the
+                    # schedule that follows is expected, not a burst.
+                    self._caf_trust_until = time.monotonic() + OPTIMISTIC_SECONDS
                 self._cor_confirmed = active
                 self._notify()
             return
@@ -1001,6 +1018,7 @@ class VentAxiaMqttCoordinator:
         # Show the commanded mode in the UI at once; reconciled in current_mode.
         self._commanded_gtm = gtm
         self._commanded_at = time.monotonic()
+        self._caf_trust_until = self._commanded_at + OPTIMISTIC_SECONDS
         # Track the end locally (clock-independent). gtm 0 cancels the override.
         if gtm == 0:
             self._local_override_end = None

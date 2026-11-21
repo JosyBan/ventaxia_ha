@@ -2,6 +2,14 @@
 
 Changes for the newer (>2023 / SX / Econiq) Advance S controller support.
 
+## 0.11.2
+
+**Fixes**
+- After you pick a mode (e.g. Auto after a boost), Current Mode now updates as
+  soon as the unit follows. In 0.11.1 it could stay on the old speed for about
+  30 seconds. The same applies when an override ends on its own. The unit's own
+  short bursts are still filtered.
+
 ## 0.11.1
 
 **Fixes**
