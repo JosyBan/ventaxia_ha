@@ -8,6 +8,7 @@ from typing import Any
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util.dt import as_utc
@@ -56,6 +57,7 @@ async def async_setup_entry(
         VentAxiaMqttRemainingSensor,
         VentAxiaMqttSensor,
         build_maintenance_sensors,
+        build_optional_temp_sensors,
     )
 
     if isinstance(coordinator, VentAxiaMqttCoordinator):
@@ -66,6 +68,7 @@ async def async_setup_entry(
         entities.append(VentAxiaMqttRemainingSensor(coordinator))
         entities.extend(build_maintenance_sensors(coordinator))
         async_add_entities(entities)
+        _setup_optional_probes(hass, coordinator, async_add_entities)
         return
 
     async_add_entities(
@@ -199,3 +202,46 @@ class VentAxiaSensor(SensorEntity):
             else:
                 # Optionally stop/cancel the timer if airflow ends early
                 self.hass.async_create_task(timer_entity.async_cancel_timer())
+
+
+OPTIONAL_PROBES = ("io/t2", "io/t4")
+
+
+def _setup_optional_probes(hass, coordinator, async_add_entities) -> None:
+    """Add supply/exhaust temperature (+ efficiency) sensors on units that have them.
+
+    Most units only fit the outdoor (t1) and extract (t3) probes and publish
+    `nan` for t2/t4, so these sensors are created only once a probe gives a real
+    reading, or straight away if they were created on an earlier run.
+    """
+    from .mqtt_coordinator import build_optional_temp_sensors
+
+    registry = er.async_get(hass)
+    added: set[str] = {
+        key
+        for key in OPTIONAL_PROBES
+        if registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{coordinator.device_id}_{key}"
+        )
+    }
+    if added:
+        async_add_entities(build_optional_temp_sensors(coordinator, added))
+    if added == set(OPTIONAL_PROBES):
+        return
+
+    @callback
+    def _check() -> None:
+        new = {
+            key
+            for key in OPTIONAL_PROBES
+            if key not in added and coordinator.temperature(key) is not None
+        }
+        if not new:
+            return
+        added.update(new)
+        async_add_entities(build_optional_temp_sensors(coordinator, new))
+        if added == set(OPTIONAL_PROBES):
+            coordinator.remove_update_callback(_check)
+
+    coordinator.add_update_callback(_check)
+    _check()

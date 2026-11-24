@@ -2,6 +2,21 @@
 
 Changes for the newer (>2023 / SX / Econiq) Advance S controller support.
 
+## 0.12.0
+
+**New**
+- **Supply Air Temperature**, **Exhaust Air Temperature** and **Heat Recovery
+  Efficiency** sensors, for units that have all four temperature probes fitted.
+  Many units only have the outdoor and extract probes. On those, the unit
+  reports the other two as "nan" and these sensors don't appear. On units that
+  have them, they appear once the first reading comes in.
+- Heat Recovery Efficiency = (supply − outdoor) ÷ (extract − outdoor). It shows
+  as unavailable when indoor and outdoor are within 3 °C, as the figure means
+  little then.
+
+**Fixes**
+- A temperature that reads "nan" now shows as unavailable instead of "nan".
+
 ## 0.11.4
 
 **Fixes**

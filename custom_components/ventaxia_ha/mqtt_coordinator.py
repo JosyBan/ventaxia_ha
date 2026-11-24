@@ -23,6 +23,7 @@ from __future__ import annotations
 import calendar
 import json
 import logging
+import math
 import ssl
 import threading
 import time
@@ -83,6 +84,29 @@ def _load_paho():
 
         mqtt = _paho
     return mqtt
+
+# Below this indoor/outdoor temperature difference (C) the efficiency ratio is
+# too noisy to report.
+EFFICIENCY_MIN_SPREAD = 3.0
+
+# Temperature probes that are only fitted on some units (published as `nan`
+# otherwise). Their sensors are added once a real reading arrives.
+OPTIONAL_TEMP_SENSORS: tuple[SensorEntityDescription, ...] = (
+    SensorEntityDescription(
+        key="io/t2",
+        name="Supply Air Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="io/t4",
+        name="Exhaust Air Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+)
 
 # Topic suffix (after "<deviceId>/") -> sensor description.
 MQTT_SENSORS: tuple[SensorEntityDescription, ...] = (
@@ -266,7 +290,9 @@ def add_months(dt: datetime, months: int) -> datetime:
 # Live telemetry — fetched every cycle (these genuinely change minute-to-minute).
 POLL_TOPICS_FAST: tuple[str, ...] = (
     "io/t1",
+    "io/t2",
     "io/t3",
+    "io/t4",
     "io/erh/val",
     "io/irh/val",
     "mdet/pwr",
@@ -741,6 +767,38 @@ class VentAxiaMqttCoordinator:
     def get(self, key: str) -> Any:
         return self.values.get(key)
 
+    def temperature(self, key: str) -> float | None:
+        """A probe reading as a float, or None if unknown or not fitted.
+
+        The controller has four temperature inputs (io/t1..t4) but publishes
+        `nan` for a probe that isn't connected; many units only have t1
+        (outdoor) and t3 (extract) fitted.
+        """
+        try:
+            val = float(self.values.get(key))
+        except (TypeError, ValueError):
+            return None
+        return val if math.isfinite(val) else None
+
+    @property
+    def heat_recovery_efficiency(self) -> float | None:
+        """Supply-side temperature efficiency (%), from the four probes.
+
+        (supply - outdoor) / (extract - outdoor). Needs the supply probe (t2);
+        returns None when the indoor/outdoor difference is too small to give a
+        meaningful ratio.
+        """
+        outdoor = self.temperature("io/t1")
+        supply = self.temperature("io/t2")
+        extract = self.temperature("io/t3")
+        if outdoor is None or supply is None or extract is None:
+            return None
+        spread = extract - outdoor
+        if abs(spread) < EFFICIENCY_MIN_SPREAD:
+            return None
+        eff = (supply - outdoor) / spread * 100
+        return round(max(0.0, min(100.0, eff)), 1)
+
     @property
     def _override_active(self) -> bool | None:
         """Whether a user override is running.
@@ -1160,10 +1218,7 @@ class VentAxiaMqttSensor(SensorEntity):
 
     @property
     def available(self) -> bool:  # type: ignore[override]
-        return (
-            self._coordinator.available
-            and self._coordinator.get(self.entity_description.key) is not None
-        )
+        return self._coordinator.available and self.native_value is not None
 
     @property
     def native_value(self) -> Any:
@@ -1173,9 +1228,11 @@ class VentAxiaMqttSensor(SensorEntity):
         if self.entity_description.native_unit_of_measurement is None:
             return raw
         try:
-            return float(raw)
+            val = float(raw)
         except (TypeError, ValueError):
             return raw
+        # An unfitted probe reports "nan": treat it as no reading.
+        return val if math.isfinite(val) else None
 
     def _handle_update(self) -> None:
         self.async_write_ha_state()
@@ -1686,6 +1743,30 @@ def _current_mode_attrs(c: VentAxiaMqttCoordinator) -> dict | None:
         if rem is not None:
             attrs["override_remaining_min"] = rem
     return attrs or None
+
+
+def build_optional_temp_sensors(
+    coordinator: VentAxiaMqttCoordinator, fitted: set[str]
+) -> list[SensorEntity]:
+    """Sensors for the extra probes in `fitted` (subset of io/t2, io/t4).
+
+    Heat recovery efficiency comes with the supply probe (io/t2).
+    """
+    entities: list[SensorEntity] = [
+        VentAxiaMqttSensor(coordinator, d)
+        for d in OPTIONAL_TEMP_SENSORS
+        if d.key in fitted
+    ]
+    if "io/t2" in fitted:
+        entities.append(
+            VentAxiaMqttDerivedSensor(
+                coordinator, "heat_recovery_efficiency", "Heat Recovery Efficiency",
+                lambda c: c.heat_recovery_efficiency,
+                unit=PERCENTAGE, icon="mdi:heat-wave",
+            )
+        )
+        entities[-1]._attr_state_class = SensorStateClass.MEASUREMENT
+    return entities
 
 
 def build_maintenance_sensors(

@@ -86,7 +86,9 @@ live topics (device id `59375-7KK9M`):
 | Topic (`<deviceId>/…`) | Meaning | Example |
 |---|---|---|
 | `io/t1` | outdoor air temp (°C) | `8.8` |
+| `io/t2` | supply air temp (°C), `nan` if probe not fitted | `nan` |
 | `io/t3` | extract air temp (°C) | `18.6` |
+| `io/t4` | exhaust air temp (°C), `nan` if probe not fitted | `nan` |
 | `io/erh/val` | extract humidity (%) | `57.6` |
 | `io/irh/val` | intake humidity (%) | `70.0` |
 | `mdet/pwr` | total power (W) | `49.3` |
