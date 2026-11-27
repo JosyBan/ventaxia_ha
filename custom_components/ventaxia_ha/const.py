@@ -30,9 +30,30 @@ CONF_PORT = "port"
 CONF_IDENTITY = "identity"
 CONF_PSK_KEY = "psk_key"
 CONF_WIFI_DEVICE_ID = "wifi_device_id"
+CONF_MODEL = "model"
+CONF_PSK_IS_HEX = "psk_is_hex"
+
+# Supported device models
+# The older Advance S has a Wi-Fi module with a printed Key + SSID.
+MODEL_ADVANCE_S = "advance_s"
+# The newer (>2023) Advance S / SX / Econiq controllers are key-less: the
+# identity is a fixed app constant and the PSK is delivered over Bluetooth
+# during pairing (owners read it out as hex).
+MODEL_ADVANCE_S_2023 = "advance_s_2023"
+
+MODELS = [MODEL_ADVANCE_S, MODEL_ADVANCE_S_2023]
+
+# Identity strings hard-coded in the Vent-Axia Connect app for the newer
+# controllers. "zirconia" is seen on the TLS handshake; "12345" is what the
+# decompiled connectToHost() passes. Either may be the one your unit accepts.
+DEFAULT_IDENTITY_2023 = "zirconia"
+ALT_IDENTITY_2023 = "12345"
 
 # Default values
 DEFAULT_PORT = 47811
+# The newer controllers carry their MQTT data on 8883 (TLS-PSK). Port 47820
+# ("zirconiaPort") also speaks TLS-PSK but is not the MQTT data channel.
+DEFAULT_PORT_2023 = 8883
 
 # Airflow modes
 AIRFLOW_MODES = {

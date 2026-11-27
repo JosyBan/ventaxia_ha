@@ -1,0 +1,1851 @@
+# File: ventaxia_ha/mqtt_coordinator.py
+"""MQTT coordinator for the newer (>2023) Advance S / SX / Econiq controllers.
+
+Unlike the older Advance S (raw null-framed JSON over TLS-PSK, handled by
+``ventaxiaiot``), these controllers run a real MQTT broker over a TLS-PSK
+socket on port 8883. After connecting with identity ``zirconia`` and the
+provisioned PSK (pinned to TLS 1.2), the client subscribes to
+``<deviceId>/#`` and the unit publishes retained telemetry such as:
+
+    <deviceId>/io/t1          outdoor air temperature (C)
+    <deviceId>/io/t3          extract air temperature (C)
+    <deviceId>/io/erh/val     extract relative humidity (%)
+    <deviceId>/io/irh/val     intake relative humidity (%)
+    <deviceId>/mdet/pwr       total power (W)
+    <deviceId>/mdet/wifi/sta  {"rssi":..,"ssid":..}
+    <deviceId>/vent/afs/rpm   supply fan speed (rpm)   (+ /pwr /pwm)
+    <deviceId>/vent/afe/rpm   extract fan speed (rpm)  (+ /pwr /pwm)
+
+Confirmed against a live unit; see docs/newer_model_notes.md.
+"""
+from __future__ import annotations
+
+import calendar
+import json
+import logging
+import math
+import ssl
+import threading
+import time
+from datetime import datetime, timedelta
+from typing import Any, Callable
+
+from homeassistant.components.button import ButtonEntity
+from homeassistant.components.number import NumberEntity, RestoreNumber
+from homeassistant.components.select import SelectEntity
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
+from homeassistant.components.switch import SwitchEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    PERCENTAGE,
+    REVOLUTIONS_PER_MINUTE,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    EntityCategory,
+    UnitOfPower,
+    UnitOfTemperature,
+    UnitOfTime,
+)
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
+
+from .client import decode_psk
+from .const import (
+    CONF_HOST,
+    CONF_IDENTITY,
+    CONF_PORT,
+    CONF_PSK_IS_HEX,
+    CONF_PSK_KEY,
+    CONF_WIFI_DEVICE_ID,
+    DOMAIN,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+# paho is imported lazily off the event loop: `import paho.mqtt.client` does a
+# blocking importlib.metadata scan (listdir) to read its version, which HA flags
+# when it happens on the loop. _load_paho() runs once in the executor.
+mqtt = None  # type: ignore[assignment]  # set by _load_paho()
+
+
+def _load_paho():
+    """Import paho.mqtt.client (blocking) and cache it in the module global."""
+    global mqtt
+    if mqtt is None:
+        import paho.mqtt.client as _paho
+
+        mqtt = _paho
+    return mqtt
+
+
+# Below this indoor/outdoor temperature difference (C) the efficiency ratio is
+# too noisy to report.
+EFFICIENCY_MIN_SPREAD = 3.0
+
+# Temperature probes that are only fitted on some units (published as `nan`
+# otherwise). Their sensors are added once a real reading arrives.
+OPTIONAL_TEMP_SENSORS: tuple[SensorEntityDescription, ...] = (
+    SensorEntityDescription(
+        key="io/t2",
+        name="Supply Air Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="io/t4",
+        name="Exhaust Air Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+)
+
+# Topic suffix (after "<deviceId>/") -> sensor description.
+MQTT_SENSORS: tuple[SensorEntityDescription, ...] = (
+    SensorEntityDescription(
+        key="io/t1",
+        name="Outdoor Air Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="io/t3",
+        name="Extract Air Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="io/erh/val",
+        name="Extract Humidity",
+        device_class=SensorDeviceClass.HUMIDITY,
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="io/irh/val",
+        name="Intake Humidity",
+        device_class=SensorDeviceClass.HUMIDITY,
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="mdet/pwr",
+        name="Power",
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="vent/afs/rpm",
+        name="Supply Fan Speed",
+        icon="mdi:fan",
+        native_unit_of_measurement=REVOLUTIONS_PER_MINUTE,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="vent/afe/rpm",
+        name="Extract Fan Speed",
+        icon="mdi:fan",
+        native_unit_of_measurement=REVOLUTIONS_PER_MINUTE,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="vent/afs/pwr",
+        name="Supply Fan Power",
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="vent/afe/pwr",
+        name="Extract Fan Power",
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="vent/saq",
+        name="Supply Air Quality",
+        icon="mdi:air-filter",
+    ),
+    SensorEntityDescription(
+        key="mdet/wifi/sta#rssi",
+        name="Wi-Fi Signal",
+        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+    ),
+)
+
+
+# Airflow override (the app's "Change mode"): publish {"gtm": N, "treq": "HH:MM:SS"}
+# to <deviceId>/vent/uo. gtm 0=Off/cancel, 1=Low, 2=Normal, 3=Boost, 4=Purge,
+# 5=Max (matches the caf "ps" field the unit reports). Verified on a live unit.
+OVERRIDE_TOPIC = "vent/uo"
+MODE_TO_GTM = {"Auto": 0, "Low": 1, "Normal": 2, "Boost": 3, "Purge": 4, "Max": 5}
+GTM_TO_MODE = {1: "Low", 2: "Normal", 3: "Boost", 4: "Purge", 5: "Max"}
+
+# Per-mode fan speeds (the app's "Fan Mode Speeds" screen). Each preset is a
+# separate topic carrying {"name", "ext", "sup"} with the extract / supply fan
+# speed as a percentage; writes go to the same topic with a "/wr" suffix.
+PRESET_FLOW_TOPICS = {
+    "Low": "vent/pf1",
+    "Normal": "vent/pf2",
+    "Boost": "vent/pf3",
+    "Purge": "vent/pf4",
+}
+PRESET_FLOW_FIELD = {"extract": "ext", "supply": "sup"}
+MODE_OPTIONS = ["Auto", "Low", "Normal", "Boost", "Purge", "Max"]
+# Base airflow speeds offered for the "Default Airflow" setpoint (vent/daf).
+DEFAULT_AIRFLOW_OPTIONS = ["Low", "Normal", "Boost", "Max"]
+
+
+def _as_float(value: Any) -> float | None:
+    """Coerce a value to float, or None if it isn't numeric."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# Default override duration (minutes) when a mode is selected; adjustable via the
+# Override Duration number entity. The unit reverts to its schedule afterwards.
+DEFAULT_OVERRIDE_MINUTES = 15
+MIN_OVERRIDE_MINUTES = 5
+MAX_OVERRIDE_MINUTES = 480
+BOOST_DURATION = "00:15:00"
+
+# The hardware override (vent/uo) is always timed — the unit ignores a zero
+# duration, so there is no native "boost until cancelled". The Boost Hold switch
+# emulates it by re-arming a timed boost in chunks while it is on.
+HOLD_CHUNK_MINUTES = 60
+HOLD_REARM_BUFFER_MINUTES = 5
+REFRESH_INTERVAL = timedelta(seconds=30)
+# How long before a timed override's tracked end to pre-empt it with an explicit
+# Auto. Must exceed the tick interval so a tick reliably fires while the override
+# is still active (the unit's own expiry can otherwise stick the airflow).
+OVERRIDE_PREEMPT_SECONDS = 40
+# Some units emit brief (~2-20s) self-initiated blips: a momentary Purge burst on
+# the schedule, or a short Boost "override" (vent/cor trem set for ~2s) that then
+# reverts to Auto. Any change the *unit* makes on its own must hold this long
+# before HA reflects it, so those blips never flap Current Mode / Ventilation
+# Mode / Auto. Changes commanded from HA show instantly (optimistic path), and
+# returning to the schedule is never delayed.
+CAF_DEBOUNCE_SECONDS = 30
+# After a mode is selected, show it in the UI immediately ("optimistic") until the
+# unit's live state catches up — or at most this long, so the UI never lies if a
+# command is dropped.
+OPTIMISTIC_SECONDS = 30
+# After sending a mode command, re-read the unit after these delays (seconds)
+# instead of waiting up to POLL_INTERVAL, so the UI confirms the real state
+# within the optimistic window rather than bouncing back to stale values.
+COMMAND_REPOLL_DELAYS = (3, 12)
+
+
+def minutes_to_treq(minutes: int) -> str:
+    """Format a whole-minute duration as the unit's "HH:MM:SS" treq string."""
+    minutes = max(0, int(minutes))
+    return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
+
+
+def treq_to_seconds(treq: str) -> int:
+    """Parse an "HH:MM:SS" treq string into whole seconds (0 on failure)."""
+    try:
+        hh, mm, ss = (int(part) for part in treq.split(":"))
+    except (ValueError, AttributeError):
+        return 0
+    return hh * 3600 + mm * 60 + ss
+
+
+def add_months(dt: datetime, months: int) -> datetime:
+    """Return dt advanced by a whole number of months (clamping the day)."""
+    total = dt.month - 1 + months
+    year = dt.year + total // 12
+    month = total % 12 + 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
+
+
+# The controller serves a topic's *current* value immediately on an exact-topic
+# subscription, but its broker has a small subscription table — holding more than
+# a handful of subscriptions makes it silently drop the rest (so many sensors sat
+# "unavailable"). The "<deviceId>/#" wildcard only delivers a topic when the
+# device next publishes it on its own slow cadence, and never serves the
+# maintenance/bypass values at all.
+#
+# So we keep "#" for live telemetry and *poll* current values in small batches:
+# subscribe a few topics (the broker serves their current value), then
+# unsubscribe them again, cycling through the whole list. Only a few
+# subscriptions are ever held at once, so nothing gets dropped.
+# Live telemetry — fetched every cycle (these genuinely change minute-to-minute).
+POLL_TOPICS_FAST: tuple[str, ...] = (
+    "io/t1",
+    "io/t2",
+    "io/t3",
+    "io/t4",
+    "io/erh/val",
+    "io/irh/val",
+    "mdet/pwr",
+    "mdet/wifi/sta",
+    "vent/afs/rpm",
+    "vent/afe/rpm",
+    "vent/afs/pwr",
+    "vent/afe/pwr",
+    "vent/caf",
+    "vent/cor",
+    "vent/saq",
+)
+# Config / maintenance — change on a monthly timescale, so polled far less often
+# (every SLOW_POLL_EVERY cycles). This avoids needlessly churning the controller's
+# tiny subscription table ~8x more than necessary.
+POLL_TOPICS_SLOW: tuple[str, ...] = (
+    "mdet/svctmr/last",
+    "mdet/svctmr/int",
+    "vent/filtertmr/last",
+    "vent/filtertmr/int",
+    "vent/filter1/typ",
+    "vent/filter2/typ",
+    "vent/sbs",
+    "vent/sbc",
+    "vent/daf",
+    "vent/pf1",
+    "vent/pf2",
+    "vent/pf3",
+    "vent/pf4",
+    "io/erh/conf",
+)
+POLL_BATCH = 4  # topics subscribed at once (keep well under the table size)
+POLL_SERVE_WAIT = 1.2  # seconds to let the broker serve a batch before unsubscribe
+POLL_BATCH_GAP = 0.3  # pause between batches
+POLL_INTERVAL = 45  # seconds between fast refresh cycles
+SLOW_POLL_EVERY = 7  # include the slow topics every Nth cycle (~5 min)
+
+# The controller's broker occasionally drops the TLS socket; paho reconnects
+# within a second or two. Don't flap every entity to "unavailable" for those
+# brief blips — only report unavailable after this long with no live connection.
+AVAILABILITY_GRACE = 240.0  # seconds
+
+
+class VentAxiaMqttCoordinator:
+    """Maintain the MQTT-over-TLS-PSK connection and cache published values."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self.hass = hass
+        self.entry = entry
+        self.data = entry.data
+        self.device_id: str = entry.data[CONF_WIFI_DEVICE_ID]
+        self.values: dict[str, Any] = {}
+        # Decoded JSON payloads, parsed once on receipt (see _store) so hot-path
+        # getters never re-parse the same payload.
+        self._json: dict[str, Any] = {}
+        self._connected = False
+        self._last_seen: float | None = None
+        self._callbacks: set[Callable[[], None]] = set()
+        self._client: mqtt.Client | None = None
+        # Override duration (minutes) used when a mode is selected; settable via
+        # the Override Duration number entity.
+        self.override_minutes: int = DEFAULT_OVERRIDE_MINUTES
+        # Locally-tracked override end time. The unit's own `vent/cor` `trem`
+        # timestamp is in the controller's local wall-clock with no timezone, so
+        # it cannot be trusted for a countdown when the unit's clock differs from
+        # HA's. We know exactly what duration we asked for, so we track it here.
+        self._local_override_end: datetime | None = None
+        # The local override end is saved so a restart mid-override keeps the
+        # countdown (the unit's own 'trem' is a heartbeat, not an end time).
+        self._override_store: Store = Store(
+            hass, 1, f"{DOMAIN}.{entry.entry_id}.override"
+        )
+        # True while _local_override_end came from storage and the unit hasn't
+        # yet confirmed the override is still running.
+        self._override_restored = False
+        # Boost Hold ("boost until turned off") — re-arms a timed boost.
+        self.boost_hold: bool = False
+        # Debounced airflow preset for the Current Mode sensor. The unit emits
+        # brief (~2s) caf "ps" blips (e.g. a momentary Purge burst) while in
+        # Auto; surfacing each one spams the logbook with Normal→Purge→Normal.
+        # We only commit a new preset after it has held for CAF_DEBOUNCE_SECONDS.
+        self._caf_ps_stable: int | None = None
+        self._caf_ps_pending: int | None = None
+        # Until this monotonic time, caf preset changes are expected (a mode
+        # was just commanded, or an override just ended) and skip the debounce.
+        self._caf_trust_until: float = 0.0
+        self._caf_debounce_unsub: Callable[[], None] | None = None
+        # Debounced unit-initiated override (vent/cor trem). A ~2s self-initiated
+        # override blip must not flip Auto/Ventilation Mode; only one that holds
+        # for CAF_DEBOUNCE_SECONDS is treated as a real override.
+        self._cor_seen: bool = False
+        self._cor_confirmed: bool = False
+        self._cor_debounce_unsub: Callable[[], None] | None = None
+        self._repoll_unsubs: list[Callable[[], None]] = []
+        # Optimistic mode: the mode just commanded via the select, shown in the UI
+        # until the unit's live state reflects it (or OPTIMISTIC_SECONDS elapses).
+        self._commanded_gtm: int | None = None
+        self._commanded_at: float = 0.0
+        self._refresh_unsub: Callable[[], None] | None = None
+        self._tick_count: int = 0
+        # Background value-poller (works around the broker's tiny sub table).
+        self._poll_thread: threading.Thread | None = None
+        self._poll_stop = threading.Event()
+        self._poll_wake = threading.Event()
+
+    # ---- lifecycle -------------------------------------------------------
+    def _build_context(self) -> ssl.SSLContext:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.set_ciphers("PSK-AES128-CBC-SHA")
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        identity = self.data[CONF_IDENTITY]
+        psk = decode_psk(self.data[CONF_PSK_KEY], self.data.get(CONF_PSK_IS_HEX, False))
+        ctx.set_psk_client_callback(lambda hint: (identity, psk))
+        return ctx
+
+    async def async_start(self) -> None:
+        """Create the client and connect (runs blocking setup in executor)."""
+        # Import paho off the loop (its import does a blocking metadata scan).
+        await self.hass.async_add_executor_job(_load_paho)
+        await self._restore_override_end()
+        try:
+            client = mqtt.Client(
+                mqtt.CallbackAPIVersion.VERSION2,
+                client_id=f"ha-{self.device_id}",
+            )
+        except (AttributeError, TypeError):  # older paho without CallbackAPIVersion
+            client = mqtt.Client(client_id=f"ha-{self.device_id}")
+
+        client.on_connect = self._on_connect
+        client.on_message = self._on_message
+        client.on_disconnect = self._on_disconnect
+        # Automatically reconnect (with backoff) if the socket drops. loop_start's
+        # network thread drives the retries; without this a dropped connection
+        # would leave every entity stuck "unavailable" until HA restarts.
+        client.reconnect_delay_set(min_delay=1, max_delay=120)
+        client.tls_set_context(self._build_context())
+        self._client = client
+
+        host = self.data[CONF_HOST]
+        port = self.data[CONF_PORT]
+        await self.hass.async_add_executor_job(client.connect, host, port, 30)
+        client.loop_start()
+
+        # Drive the override countdown and the Boost Hold re-arm on a steady tick,
+        # independent of how often the unit publishes telemetry.
+        self._refresh_unsub = async_track_time_interval(
+            self.hass, self._tick, REFRESH_INTERVAL
+        )
+
+        # Start the background value-poller.
+        self._poll_stop.clear()
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop, name="ventaxia-poll", daemon=True
+        )
+        self._poll_thread.start()
+
+    async def async_stop(self) -> None:
+        if self._refresh_unsub is not None:
+            self._refresh_unsub()
+            self._refresh_unsub = None
+        if self._caf_debounce_unsub is not None:
+            self._caf_debounce_unsub()
+            self._caf_debounce_unsub = None
+        if self._cor_debounce_unsub is not None:
+            self._cor_debounce_unsub()
+            self._cor_debounce_unsub = None
+        for unsub in self._repoll_unsubs:
+            unsub()
+        self._repoll_unsubs.clear()
+        self._poll_stop.set()
+        self._poll_wake.set()
+        if self._poll_thread is not None:
+            await self.hass.async_add_executor_job(self._poll_thread.join, 5)
+            self._poll_thread = None
+        client = self._client
+        self._client = None
+        if client is not None:
+            try:
+                client.loop_stop()
+                await self.hass.async_add_executor_job(client.disconnect)
+            except Exception:  # pragma: no cover - best effort shutdown
+                _LOGGER.debug("Error during MQTT shutdown", exc_info=True)
+
+    @staticmethod
+    def _poll_topics_for_cycle(cycle: int) -> tuple[str, ...]:
+        """Topics to fetch this cycle: fast always, slow every SLOW_POLL_EVERY-th
+        cycle (and cycle 0, so config loads promptly at startup)."""
+        if cycle % SLOW_POLL_EVERY == 0:
+            return POLL_TOPICS_FAST + POLL_TOPICS_SLOW
+        return POLL_TOPICS_FAST
+
+    def _poll_loop(self) -> None:
+        """Cycle through the poll topics, briefly subscribing so the broker serves
+        each value, then unsubscribing — keeping only a few subscriptions held at
+        once so the controller's small subscription table never overflows.
+
+        Fast telemetry is fetched every cycle; the slow config/maintenance topics
+        only every SLOW_POLL_EVERY cycles (and on the first cycle, so they load
+        promptly at startup)."""
+        cycle = 0
+        while not self._poll_stop.is_set():
+            if self._connected and self._client is not None:
+                client = self._client
+                topics = self._poll_topics_for_cycle(cycle)
+                for i in range(0, len(topics), POLL_BATCH):
+                    if self._poll_stop.is_set() or not self._connected:
+                        break
+                    batch = topics[i : i + POLL_BATCH]
+                    for topic in batch:
+                        try:
+                            client.subscribe(f"{self.device_id}/{topic}", qos=0)
+                        except Exception:  # pragma: no cover
+                            pass
+                    if self._poll_stop.wait(POLL_SERVE_WAIT):
+                        break
+                    for topic in batch:
+                        try:
+                            client.unsubscribe(f"{self.device_id}/{topic}")
+                        except Exception:  # pragma: no cover
+                            pass
+                    if self._poll_stop.wait(POLL_BATCH_GAP):
+                        break
+                self.hass.loop.call_soon_threadsafe(self._notify)
+                cycle += 1
+            # Wait until the next cycle, or until woken by a (re)connect.
+            self._poll_wake.wait(POLL_INTERVAL)
+            self._poll_wake.clear()
+
+    @callback
+    def _tick(self, now=None) -> None:
+        """Periodic tick: re-arm a held boost, revert elapsed overrides, refresh countdowns.
+
+        Marked @callback so async_track_time_interval runs it on the event loop
+        (a bare function would run in an executor thread, and the entity state
+        writes it triggers via _notify are only safe on the loop).
+        """
+        self._tick_count += 1
+        if self.boost_hold:
+            end = self._local_override_end
+            if (
+                end is None
+                or (end - dt_util.now()).total_seconds()
+                < HOLD_REARM_BUFFER_MINUTES * 60
+            ):
+                self._apply_boost_chunk()
+        elif (
+            self._local_override_end is not None
+            and (self._local_override_end - dt_util.now()).total_seconds()
+            <= OVERRIDE_PREEMPT_SECONDS
+        ):
+            # Pre-empt the unit's own override timer. Letting the unit expire the
+            # override itself occasionally leaves it stuck running the override
+            # airflow (notably Purge, or after a mid-override mode switch) while
+            # reporting Auto — the motors keep spinning and only a manual
+            # Normal -> Auto clears it. An explicit Auto (gtm 0) sent *while the
+            # override is still active* cleanly returns the unit to its schedule
+            # (verified live), whereas the same command after it has already
+            # stuck is a no-op. So cancel it ourselves a little early, which
+            # avoids the unit's flaky self-expiry entirely.
+            _LOGGER.debug("VentAxia override pre-empt: reverting to Auto")
+            self.set_override(0, "00:00:00")
+        self._notify()
+
+    # ---- paho callbacks (run in paho's network thread) -------------------
+    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
+        rc = getattr(reason_code, "value", reason_code)
+        if rc not in (
+            0,
+            mqtt.CONNACK_ACCEPTED if hasattr(mqtt, "CONNACK_ACCEPTED") else 0,
+        ):
+            _LOGGER.warning("VentAxia MQTT connect failed: rc=%s", reason_code)
+            return
+        self._connected = True
+        self._last_seen = time.monotonic()
+        # "#" delivers live telemetry the device pushes on its own cadence; the
+        # poll thread fills in current values (and the maintenance/bypass topics
+        # the wildcard never serves).
+        client.subscribe(f"{self.device_id}/#", qos=0)
+        self._poll_wake.set()  # run a full poll now
+        self.hass.loop.call_soon_threadsafe(self._notify)
+
+    def _on_disconnect(self, *args):
+        self._connected = False
+        self.hass.loop.call_soon_threadsafe(self._notify)
+
+    def _store(self, suffix: str, payload: str) -> bool:
+        """Cache a topic's raw payload and (if JSON) its decoded form.
+
+        Returns True only when the value actually changed, so callers can skip
+        the entity fan-out for identical re-publishes (retained values, the
+        broker re-serving the same reading each poll cycle, etc.).
+        """
+        if payload == "":
+            # An empty publish is a retained-clear, not a reading. Some config
+            # topics (notably vent/pf1..4, the per-mode fan speeds) are served
+            # once on subscribe and then cleared with an empty message; keep the
+            # last good value instead of wiping it (which would blank entities).
+            return False
+        if self.values.get(suffix) == payload:
+            return False
+        self.values[suffix] = payload
+        if payload[:1] in ("{", "["):
+            try:
+                self._json[suffix] = json.loads(payload)
+            except (ValueError, TypeError):
+                self._json.pop(suffix, None)
+        elif suffix in self._json:
+            del self._json[suffix]
+        return True
+
+    def _on_message(self, client, userdata, msg):
+        suffix = (
+            msg.topic[len(self.device_id) + 1 :]
+            if msg.topic.startswith(self.device_id + "/")
+            else msg.topic
+        )
+        payload = msg.payload.decode("utf-8", "replace")
+        # Liveness: refresh even on an identical re-publish (proves availability).
+        self._last_seen = time.monotonic()
+        if not self._store(suffix, payload):
+            return  # unchanged — nothing for the entities to re-render
+        # Flatten the Wi-Fi JSON blob into a synthetic rssi topic.
+        if suffix == "mdet/wifi/sta":
+            blob = self._json.get("mdet/wifi/sta")
+            if isinstance(blob, dict):
+                self.values["mdet/wifi/sta#rssi"] = blob.get("rssi")
+        if suffix == "vent/caf":
+            self.hass.loop.call_soon_threadsafe(self._on_caf_update)
+        if suffix == "vent/cor":
+            self.hass.loop.call_soon_threadsafe(self._on_cor_update)
+        self.hass.loop.call_soon_threadsafe(self._notify)
+
+    def _caf_ps(self) -> int | None:
+        """The airflow preset ("ps") from the cached caf payload."""
+        caf = self._json.get("vent/caf")
+        return caf.get("ps") if isinstance(caf, dict) else None
+
+    def _on_caf_update(self) -> None:
+        """Track caf 'ps' changes for the Current Mode sensor (on the event loop).
+
+        Every change the unit makes on its own is held for
+        ``CAF_DEBOUNCE_SECONDS`` before it is committed, because some units emit
+        brief (~2s) Purge/Boost bursts that would otherwise flap the sensor
+        (e.g. Low→Boost→Low). Modes commanded from HA show instantly through the
+        optimistic path, and during an override the live speed is used, so only
+        unprompted schedule changes see the short delay. The very first reading
+        is committed at once.
+        """
+        ps = self._caf_ps()
+        if ps != self._caf_ps_stable:
+            # Log every unit-initiated preset change (e.g. a brief Boost/Purge
+            # burst) with the humidity and override context, so a user chasing
+            # unexpected boosting can see it in the debug log — the integration
+            # otherwise only logs commands it *sends*, never what the unit does.
+            _LOGGER.debug(
+                "VentAxia caf preset %s -> %s (extract RH=%s, cor=%s, caf=%s)",
+                self._caf_ps_stable,
+                ps,
+                self.values.get("io/erh/val"),
+                self.values.get("vent/cor"),
+                self.values.get("vent/caf"),
+            )
+        if ps is None or ps == self._caf_ps_stable:
+            # Unchanged (or back to committed) — drop any pending Purge change.
+            self._caf_ps_pending = None
+            if self._caf_debounce_unsub is not None:
+                self._caf_debounce_unsub()
+                self._caf_debounce_unsub = None
+            return
+        if self._caf_ps_stable is None:
+            # The very first reading — reflect at once.
+            self._caf_ps_pending = None
+            if self._caf_debounce_unsub is not None:
+                self._caf_debounce_unsub()
+                self._caf_debounce_unsub = None
+            self._caf_ps_stable = ps
+            self._notify()
+            return
+        if time.monotonic() < self._caf_trust_until:
+            # Expected change (we just sent a command, or an override just
+            # ended): the unit is following it, not bursting — show it now.
+            self._caf_ps_pending = None
+            if self._caf_debounce_unsub is not None:
+                self._caf_debounce_unsub()
+                self._caf_debounce_unsub = None
+            self._caf_ps_stable = ps
+            self._notify()
+            return
+        # A unit-initiated change — hold it until it proves it's not a blip.
+        if ps == self._caf_ps_pending:
+            return  # already waiting on this value
+        self._caf_ps_pending = ps
+        if self._caf_debounce_unsub is not None:
+            self._caf_debounce_unsub()
+        self._caf_debounce_unsub = async_call_later(
+            self.hass, CAF_DEBOUNCE_SECONDS, self._commit_caf
+        )
+
+    @callback
+    def _commit_caf(self, _now=None) -> None:
+        """Promote a pending caf preset to stable once it has held long enough."""
+        self._caf_debounce_unsub = None
+        if self._caf_ps_pending is None:
+            return
+        self._caf_ps_stable = self._caf_ps_pending
+        self._caf_ps_pending = None
+        self._notify()
+
+    def _on_cor_update(self) -> None:
+        """Debounce unit-initiated overrides (vent/cor 'trem'), on the event loop.
+
+        Some units start a ~2s Boost "override" on their own and then drop back
+        to Auto; surfacing it flips Auto off/on and Ventilation Mode to Boost and
+        back. An override reported by the unit only counts once it has held for
+        ``CAF_DEBOUNCE_SECONDS``; an override ending is reflected at once. The
+        first reading after startup is trusted immediately, and overrides
+        started from HA use the local tracking path, so neither is delayed.
+        """
+        cor = self._json.get("vent/cor")
+        active = bool(cor.get("trem")) if isinstance(cor, dict) else False
+        first = not self._cor_seen
+        self._cor_seen = True
+        if self._override_restored:
+            # A saved end from before a restart only counts if the unit is still
+            # in that override; if it ended meanwhile (e.g. from the wall
+            # controller), forget it.
+            self._override_restored = False
+            if not active:
+                self._local_override_end = None
+                self._save_override_end()
+        if not active or first:
+            if self._cor_debounce_unsub is not None:
+                self._cor_debounce_unsub()
+                self._cor_debounce_unsub = None
+            if self._cor_confirmed != active:
+                if self._cor_confirmed and not active:
+                    # A real override just ended: the preset change back to the
+                    # schedule is expected, not a burst. The unit often sends it
+                    # a few seconds *before* clearing the override, so take the
+                    # current preset now instead of letting the debounce hold an
+                    # old one (which showed e.g. Boost for 30s after the end).
+                    self._caf_trust_until = time.monotonic() + OPTIMISTIC_SECONDS
+                    ps = self._caf_ps()
+                    if ps is not None:
+                        self._caf_ps_stable = ps
+                    self._caf_ps_pending = None
+                    if self._caf_debounce_unsub is not None:
+                        self._caf_debounce_unsub()
+                        self._caf_debounce_unsub = None
+                self._cor_confirmed = active
+                self._notify()
+            return
+        if self._cor_confirmed or self._cor_debounce_unsub is not None:
+            return  # already active, or already waiting on it
+        self._cor_debounce_unsub = async_call_later(
+            self.hass, CAF_DEBOUNCE_SECONDS, self._commit_cor
+        )
+
+    @callback
+    def _commit_cor(self, _now=None) -> None:
+        """Treat a unit-reported override as real once it has held long enough."""
+        self._cor_debounce_unsub = None
+        cor = self._json.get("vent/cor")
+        if isinstance(cor, dict) and cor.get("trem"):
+            self._cor_confirmed = True
+            self._notify()
+
+    # ---- helpers ---------------------------------------------------------
+    def _notify(self) -> None:
+        for cb in tuple(self._callbacks):
+            cb()
+
+    def get(self, key: str) -> Any:
+        return self.values.get(key)
+
+    def temperature(self, key: str) -> float | None:
+        """A probe reading as a float, or None if unknown or not fitted.
+
+        The controller has four temperature inputs (io/t1..t4) but publishes
+        `nan` for a probe that isn't connected; many units only have t1
+        (outdoor) and t3 (extract) fitted.
+        """
+        try:
+            val = float(self.values.get(key))
+        except (TypeError, ValueError):
+            return None
+        return val if math.isfinite(val) else None
+
+    @property
+    def heat_recovery_efficiency(self) -> float | None:
+        """Supply-side temperature efficiency (%), from the four probes.
+
+        (supply - outdoor) / (extract - outdoor). Needs the supply probe (t2);
+        returns None when the indoor/outdoor difference is too small to give a
+        meaningful ratio.
+        """
+        outdoor = self.temperature("io/t1")
+        supply = self.temperature("io/t2")
+        extract = self.temperature("io/t3")
+        if outdoor is None or supply is None or extract is None:
+            return None
+        spread = extract - outdoor
+        if abs(spread) < EFFICIENCY_MIN_SPREAD:
+            return None
+        eff = (supply - outdoor) / spread * 100
+        return round(max(0.0, min(100.0, eff)), 1)
+
+    @property
+    def _override_active(self) -> bool | None:
+        """Whether a user override is running.
+
+        True while our locally-tracked override is still in the future, or while
+        the unit's `vent/cor` reports a non-empty `trem` (an override started
+        outside HA, e.g. from the wall controller). Empty `trem` with no local
+        override means the unit is following its schedule (the "Auto" state).
+        Returns None when nothing is known yet.
+        """
+        if self._local_override_end is not None:
+            return self._local_override_end > dt_util.now()
+        cor = self._json.get("vent/cor")
+        if not isinstance(cor, dict):
+            return None
+        # Debounced: a brief unit-initiated override blip doesn't count.
+        return self._cor_confirmed and bool(cor.get("trem"))
+
+    def _device_override_end(self) -> datetime | None:
+        """The unit's reported override end (vent/cor 'trem'); clock-based."""
+        cor = self._json.get("vent/cor")
+        trem = cor.get("trem") if isinstance(cor, dict) else None
+        if not trem:
+            return None
+        try:
+            parsed = datetime.fromisoformat(trem)
+        except (ValueError, TypeError):
+            return None
+        # The unit reports local wall-clock time without a zone.
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+        return parsed
+
+    @property
+    def override_ends_at(self) -> datetime | None:
+        """When the active override ends.
+
+        Prefers our locally-tracked end (immune to the unit's clock/timezone);
+        falls back to the unit's reported `trem` for overrides started elsewhere.
+        """
+        local = self._local_override_end
+        if local is not None and local > dt_util.now():
+            return local
+        if local is None:
+            return self._device_override_end()
+        return None
+
+    @property
+    def override_remaining_minutes(self) -> int | None:
+        """Minutes left on the active override, or None when idle."""
+        ends = self.override_ends_at
+        if ends is None:
+            return None
+        remaining = (ends - dt_util.now()).total_seconds() / 60
+        return max(0, round(remaining))
+
+    def _commanded_mode(self) -> str | None:
+        """The optimistic just-commanded mode ("Auto" or a speed), or None once
+        the unit's live state matches it or OPTIMISTIC_SECONDS have elapsed."""
+        if self._commanded_gtm is None:
+            return None
+        target = (
+            "Auto" if self._commanded_gtm == 0 else GTM_TO_MODE.get(self._commanded_gtm)
+        )
+        if (
+            self._live_mode() == target
+            or (time.monotonic() - self._commanded_at) > OPTIMISTIC_SECONDS
+        ):
+            self._commanded_gtm = None  # reconciled (or timed out)
+            return None
+        return target
+
+    @property
+    def current_mode(self) -> str | None:
+        """Current ventilation mode for the select.
+
+        Right after a selection this is the *commanded* mode (optimistic), so the
+        UI updates instantly instead of waiting for the unit to republish its
+        state. Once the live value matches (or OPTIMISTIC_SECONDS pass) it reverts
+        to the real value: "Auto" on schedule, else the override speed from caf.
+        """
+        return self._commanded_mode() or self._live_mode()
+
+    def _live_mode(self) -> str | None:
+        """The ventilation mode as last reported by the unit (no optimism)."""
+        active = self._override_active
+        if active is False:
+            return "Auto"
+        ps = self._caf_ps()
+        if ps is None:
+            return "Auto" if active is None else None
+        return GTM_TO_MODE.get(ps)
+
+    @property
+    def effective_mode(self) -> str | None:
+        """The speed the unit is actually running right now, e.g. ``Low``.
+
+        During a manual timed override this is the live override speed; while
+        following the schedule it's the debounced airflow preset. Whether that
+        speed is schedule-driven ("Auto") is exposed separately by the ``auto``
+        property / binary sensor, so this stays a clean mode name.
+        """
+        # A just-commanded speed shows immediately (optimistic); "Auto" isn't a
+        # speed, so for that we fall through to the live/debounced value.
+        cmd = self._commanded_mode()
+        if cmd and cmd != "Auto":
+            return cmd
+        if self._override_active:
+            # During a manual timed override show the live override speed.
+            return self._live_mode()
+        # On schedule, use the debounced preset so brief airflow blips (a ~2s
+        # Purge burst, etc.) don't flap the sensor between e.g. Normal and Purge.
+        return GTM_TO_MODE.get(self._caf_ps_stable) if self._caf_ps_stable else None
+
+    @property
+    def auto(self) -> bool | None:
+        """Whether the unit is following its own schedule (True) rather than a
+        manual override (False). None until the override state is known."""
+        # Just-commanded: follow the command at once, like the select does.
+        cmd = self._commanded_mode()
+        if cmd is not None:
+            return cmd == "Auto"
+        active = self._override_active
+        return None if active is None else not active
+
+    # ---- maintenance / bypass (exact-subscription topics) ----------------
+    def _parse_local_dt(self, key: str) -> datetime | None:
+        """Parse an ISO timestamp the unit reports in its local clock (no zone)."""
+        raw = self.values.get(key)
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except (ValueError, TypeError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+        return parsed
+
+    def _int_val(self, key: str) -> int | None:
+        raw = self.values.get(key)
+        try:
+            return int(float(raw))
+        except (TypeError, ValueError):
+            return None
+
+    def _due(self, last_key: str, interval_key: str) -> datetime | None:
+        last = self._parse_local_dt(last_key)
+        months = self._int_val(interval_key)
+        if last is None or months is None:
+            return None
+        return add_months(last, months)
+
+    @property
+    def filter_due(self) -> datetime | None:
+        return self._due("vent/filtertmr/last", "vent/filtertmr/int")
+
+    @property
+    def filter_days_remaining(self) -> int | None:
+        due = self.filter_due
+        if due is None:
+            return None
+        return max(0, (due - dt_util.now()).days)
+
+    @property
+    def service_due(self) -> datetime | None:
+        return self._due("mdet/svctmr/last", "mdet/svctmr/int")
+
+    @property
+    def service_days_remaining(self) -> int | None:
+        due = self.service_due
+        if due is None:
+            return None
+        return max(0, (due - dt_util.now()).days)
+
+    def _json_val(self, key: str) -> dict | None:
+        parsed = self._json.get(key)
+        return parsed if isinstance(parsed, dict) else None
+
+    @property
+    def bypass_state(self) -> str | None:
+        """'Open' when the summer bypass is engaged, else 'Closed'."""
+        sbs = self._json_val("vent/sbs")
+        if sbs is None:
+            return None
+        # `op` is the active bypass output (0 = closed/not bypassing).
+        return "Open" if sbs.get("op") else "Closed"
+
+    @property
+    def humidity_threshold(self) -> float | None:
+        """Extract-humidity % at which the unit auto-boosts (io/erh/conf 'th')."""
+        conf = self._json_val("io/erh/conf")
+        if conf is None:
+            return None
+        try:
+            return float(conf.get("th"))
+        except (TypeError, ValueError):
+            return None
+
+    def set_humidity_threshold(self, value: float) -> None:
+        """Write a new humidity boost threshold, preserving the other IAQ fields."""
+        if self._client is None:
+            return
+        conf = self._json_val("io/erh/conf")
+        # Preserve the humidity-response fields the app sets; fall back to the
+        # unit's known defaults only if we have not read the config yet.
+        if conf is None:
+            conf = {"are": True, "rre": True, "rror": 900, "gtm": 3}
+        conf = dict(conf)
+        conf["th"] = float(value)
+        payload = json.dumps(conf)
+        self._client.publish(f"{self.device_id}/io/erh/conf/wr", payload, qos=1)
+        _LOGGER.debug("VentAxia humidity threshold -> %s", payload)
+        # Optimistic cache update so the UI reflects the change immediately.
+        self._store("io/erh/conf", payload)
+        self._notify()
+
+    # ---- summer-bypass comfort setpoints (vent/sbc) ----------------------
+    @property
+    def bypass_comfort_indoor(self) -> float | None:
+        """Indoor comfort temperature the summer bypass aims for (sbc 'ict')."""
+        sbc = self._json_val("vent/sbc")
+        return _as_float(sbc.get("ict")) if sbc else None
+
+    @property
+    def bypass_comfort_external(self) -> float | None:
+        """Outdoor/extract comfort threshold for the summer bypass (sbc 'ect')."""
+        sbc = self._json_val("vent/sbc")
+        return _as_float(sbc.get("ect")) if sbc else None
+
+    def _set_sbc_field(self, field: str, value: float) -> None:
+        """Write one summer-bypass config field, preserving the rest."""
+        if self._client is None:
+            return
+        sbc = self._json_val("vent/sbc")
+        if sbc is None:
+            return  # never write a partial config blind
+        sbc = dict(sbc)
+        sbc[field] = float(value)
+        payload = json.dumps(sbc)
+        self._client.publish(f"{self.device_id}/vent/sbc/wr", payload, qos=1)
+        _LOGGER.debug("VentAxia summer bypass -> %s", payload)
+        self._store("vent/sbc", payload)
+        self._notify()
+
+    def set_bypass_comfort_indoor(self, value: float) -> None:
+        self._set_sbc_field("ict", value)
+
+    def set_bypass_comfort_external(self, value: float) -> None:
+        self._set_sbc_field("ect", value)
+
+    # ---- default (base) airflow speed (vent/daf) -------------------------
+    @property
+    def default_airflow(self) -> str | None:
+        """The unit's base airflow speed when idle on its schedule (vent/daf)."""
+        raw = self.values.get("vent/daf")
+        try:
+            return GTM_TO_MODE.get(int(float(raw)))
+        except (TypeError, ValueError):
+            return None
+
+    def set_default_airflow(self, mode: str) -> None:
+        if self._client is None:
+            return
+        gtm = MODE_TO_GTM.get(mode)
+        if gtm is None:
+            return
+        payload = str(gtm)
+        self._client.publish(f"{self.device_id}/vent/daf/wr", payload, qos=1)
+        _LOGGER.debug("VentAxia default airflow -> %s", payload)
+        self._store("vent/daf", payload)
+        self._notify()
+
+    # ---- per-mode fan speeds (vent/pf1..pf4) -----------------------------
+    def fan_speed(self, mode: str, direction: str) -> float | None:
+        """Extract/supply fan speed % for a mode (Low/Normal/Boost/Purge)."""
+        topic = PRESET_FLOW_TOPICS.get(mode)
+        pf = self._json_val(topic) if topic else None
+        if pf is None:
+            return None
+        return _as_float(pf.get(PRESET_FLOW_FIELD[direction]))
+
+    def set_fan_speed(self, mode: str, direction: str, value: float) -> None:
+        """Write one fan speed %, preserving the preset's other fields."""
+        if self._client is None:
+            return
+        topic = PRESET_FLOW_TOPICS.get(mode)
+        pf = self._json_val(topic) if topic else None
+        if pf is None:
+            return  # never write a partial preset blind
+        pf = dict(pf)
+        pf[PRESET_FLOW_FIELD[direction]] = float(value)
+        payload = json.dumps(pf)
+        self._client.publish(f"{self.device_id}/{topic}/wr", payload, qos=1)
+        _LOGGER.debug("VentAxia fan speed %s %s -> %s", mode, direction, payload)
+        self._store(topic, payload)
+        self._notify()
+
+    async def _restore_override_end(self) -> None:
+        """Reload a saved override end so Override Remaining survives a restart."""
+        try:
+            data = await self._override_store.async_load()
+        except Exception:  # noqa: BLE001 - a bad file must not break setup
+            _LOGGER.debug("VentAxia: could not load saved override end", exc_info=True)
+            return
+        raw = data.get("end") if isinstance(data, dict) else None
+        end = dt_util.parse_datetime(raw) if isinstance(raw, str) else None
+        if end is not None and end > dt_util.now():
+            self._local_override_end = end
+            self._override_restored = True
+            _LOGGER.debug("VentAxia: restored override end %s", end.isoformat())
+
+    def _save_override_end(self) -> None:
+        end = self._local_override_end
+        self._override_store.async_delay_save(
+            lambda: {"end": end.isoformat() if end else None}, 1
+        )
+
+    def set_override(self, gtm: int, treq: str) -> None:
+        """Publish an airflow override to the unit and track its end locally."""
+        if self._client is None:
+            return
+        payload = json.dumps({"gtm": gtm, "treq": treq})
+        # QoS 1 so a press issued during a brief reconnect is still delivered.
+        self._client.publish(f"{self.device_id}/{OVERRIDE_TOPIC}", payload, qos=1)
+        _LOGGER.debug("VentAxia override -> %s", payload)
+        # Show the commanded mode in the UI at once; reconciled in current_mode.
+        self._commanded_gtm = gtm
+        self._commanded_at = time.monotonic()
+        self._caf_trust_until = self._commanded_at + OPTIMISTIC_SECONDS
+        # Track the end locally (clock-independent). gtm 0 cancels the override.
+        if gtm == 0:
+            self._local_override_end = None
+        else:
+            secs = treq_to_seconds(treq)
+            self._local_override_end = (
+                dt_util.now() + timedelta(seconds=secs) if secs > 0 else None
+            )
+        self._override_restored = False
+        self._save_override_end()
+        self._schedule_command_repoll()
+        self._notify()
+
+    def _schedule_command_repoll(self) -> None:
+        """Re-read the unit shortly after a command instead of waiting for the
+        next regular poll, so its confirmation lands inside the optimistic
+        window. Earlier pending re-polls are replaced by the new ones."""
+        for unsub in self._repoll_unsubs:
+            unsub()
+        self._repoll_unsubs = [
+            async_call_later(self.hass, delay, self._wake_poll)
+            for delay in COMMAND_REPOLL_DELAYS
+        ]
+
+    @callback
+    def _wake_poll(self, _now=None) -> None:
+        """Start a poll cycle now (the poll thread is waiting on this event)."""
+        self._poll_wake.set()
+
+    def _apply_boost_chunk(self) -> None:
+        """(Re)issue a timed boost chunk to keep Boost Hold alive."""
+        self.set_override(MODE_TO_GTM["Boost"], minutes_to_treq(HOLD_CHUNK_MINUTES))
+
+    def set_boost_hold(self, on: bool) -> None:
+        """Turn 'boost until cancelled' on or off (emulated via re-arming)."""
+        self.boost_hold = on
+        if on:
+            self._apply_boost_chunk()
+        else:
+            self.set_override(0, "00:00:00")
+        self._notify()
+
+    @property
+    def available(self) -> bool:
+        # Stay available through brief reconnects: only report unavailable after
+        # AVAILABILITY_GRACE seconds with no live connection or data.
+        if self._connected:
+            return True
+        if self._last_seen is None:
+            return False
+        return (time.monotonic() - self._last_seen) < AVAILABILITY_GRACE
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.device_id)},
+            name=f"VentAxia {self.device_id}",
+            manufacturer="Vent-Axia",
+            model="Sentinel Kinetic Advance S (>2023)",
+        )
+
+    def add_update_callback(self, callback: Callable[[], None]) -> None:
+        self._callbacks.add(callback)
+
+    def remove_update_callback(self, callback: Callable[[], None]) -> None:
+        self._callbacks.discard(callback)
+
+
+class VentAxiaMqttSensor(SensorEntity):
+    """A sensor backed by one MQTT topic of the newer controller."""
+
+    _attr_has_entity_name = True
+    entity_description: SensorEntityDescription
+
+    def __init__(
+        self,
+        coordinator: VentAxiaMqttCoordinator,
+        description: SensorEntityDescription,
+    ) -> None:
+        self._coordinator = coordinator
+        self.entity_description = description
+        self._attr_unique_id = f"{coordinator.device_id}_{description.key}"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return self._coordinator.available and self.native_value is not None
+
+    @property
+    def native_value(self) -> Any:
+        raw = self._coordinator.get(self.entity_description.key)
+        if raw is None:
+            return None
+        if self.entity_description.native_unit_of_measurement is None:
+            return raw
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return raw
+        # An unfitted probe reports "nan": treat it as no reading.
+        return val if math.isfinite(val) else None
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
+
+
+class VentAxiaMqttModeSelect(SelectEntity):
+    """Airflow mode override for the newer controller."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Ventilation Mode"
+    _attr_icon = "mdi:fan"
+    _attr_options = MODE_OPTIONS
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_mode"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        # Controls stay pressable across brief reconnects; the command is sent
+        # with QoS 1 and delivered once the socket is back.
+        return True
+
+    @property
+    def current_option(self) -> str | None:
+        return self._coordinator.current_mode
+
+    async def async_select_option(self, option: str) -> None:
+        gtm = MODE_TO_GTM.get(option)
+        if gtm is None:
+            return
+        treq = (
+            "00:00:00"
+            if gtm == 0
+            else minutes_to_treq(self._coordinator.override_minutes)
+        )
+        self._coordinator.set_override(gtm, treq)
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
+
+
+class VentAxiaMqttBoostButton(ButtonEntity):
+    """One-press boost for a fixed duration."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Boost 15 min"
+    _attr_icon = "mdi:fan-plus"
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_boost"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        # A button is stateless; keep it pressable across brief reconnects.
+        return True
+
+    async def async_press(self) -> None:
+        self._coordinator.set_override(MODE_TO_GTM["Boost"], BOOST_DURATION)
+
+
+class VentAxiaMqttBoostHoldSwitch(SwitchEntity, RestoreEntity):
+    """Boost until turned off.
+
+    The unit's override is always timed (a zero duration is ignored), so this
+    switch emulates an indefinite boost by re-arming a timed boost in chunks
+    while it is on — ideal for driving from an automation (e.g. a hob sensor)
+    instead of wiring a relay to the hardware Boost input.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Boost Hold"
+    _attr_icon = "mdi:fan-plus"
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_boost_hold"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def is_on(self) -> bool:
+        return self._coordinator.boost_hold
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        self._coordinator.set_boost_hold(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        self._coordinator.set_boost_hold(False)
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        # Restore the hold across restarts; re-arm if it was on.
+        last = await self.async_get_last_state()
+        if last is not None and last.state == "on":
+            self._coordinator.set_boost_hold(True)
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
+
+
+class VentAxiaMqttDurationNumber(RestoreNumber):
+    """How long a selected mode override runs before the unit reverts."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Override Duration"
+    _attr_icon = "mdi:timer-cog-outline"
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_native_min_value = MIN_OVERRIDE_MINUTES
+    _attr_native_max_value = MAX_OVERRIDE_MINUTES
+    _attr_native_step = 5
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_mode = "box"
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_override_duration"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def native_value(self) -> float:
+        return self._coordinator.override_minutes
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._coordinator.override_minutes = int(value)
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_number_data()
+        if last is not None and last.native_value is not None:
+            self._coordinator.override_minutes = int(last.native_value)
+
+
+class VentAxiaMqttHumidityThresholdNumber(NumberEntity):
+    """Extract-humidity % at which the unit automatically boosts (IAQ)."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Humidity Boost Threshold"
+    _attr_icon = "mdi:water-percent"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_native_min_value = 60
+    _attr_native_max_value = 90
+    _attr_native_step = 1
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_mode = "slider"
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_humidity_threshold"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return (
+            self._coordinator.available
+            and self._coordinator.humidity_threshold is not None
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        return self._coordinator.humidity_threshold
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._coordinator.set_humidity_threshold(value)
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
+
+
+class VentAxiaMqttConfigNumber(NumberEntity):
+    """A writable config value computed from / written to the coordinator."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_mode = "box"
+
+    def __init__(
+        self,
+        coordinator: VentAxiaMqttCoordinator,
+        key: str,
+        name: str,
+        value_fn: Callable[[VentAxiaMqttCoordinator], float | None],
+        set_fn: Callable[[VentAxiaMqttCoordinator, float], None],
+        *,
+        icon: str | None = None,
+        unit: str | None = None,
+        min_value: float = 0,
+        max_value: float = 100,
+        step: float = 1,
+        device: DeviceInfo | None = None,
+    ) -> None:
+        self._coordinator = coordinator
+        self._value_fn = value_fn
+        self._set_fn = set_fn
+        self._device = device
+        self._attr_unique_id = f"{coordinator.device_id}_{key}"
+        self._attr_name = name
+        if icon is not None:
+            self._attr_icon = icon
+        if unit is not None:
+            self._attr_native_unit_of_measurement = unit
+        self._attr_native_min_value = min_value
+        self._attr_native_max_value = max_value
+        self._attr_native_step = step
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._device or self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return (
+            self._coordinator.available
+            and self._value_fn(self._coordinator) is not None
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        return self._value_fn(self._coordinator)
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._set_fn(self._coordinator, value)
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
+
+
+def build_config_numbers(
+    coordinator: VentAxiaMqttCoordinator,
+) -> list[VentAxiaMqttConfigNumber]:
+    """Writable summer-bypass comfort setpoints for the newer model."""
+    return [
+        VentAxiaMqttConfigNumber(
+            coordinator,
+            "bypass_comfort_indoor",
+            "Bypass Indoor Comfort Temp",
+            lambda c: c.bypass_comfort_indoor,
+            lambda c, v: c.set_bypass_comfort_indoor(v),
+            icon="mdi:home-thermometer",
+            unit=UnitOfTemperature.CELSIUS,
+            min_value=15,
+            max_value=30,
+            step=0.5,
+        ),
+        VentAxiaMqttConfigNumber(
+            coordinator,
+            "bypass_comfort_external",
+            "Bypass Outdoor Comfort Temp",
+            lambda c: c.bypass_comfort_external,
+            lambda c, v: c.set_bypass_comfort_external(v),
+            icon="mdi:sun-thermometer",
+            unit=UnitOfTemperature.CELSIUS,
+            min_value=5,
+            max_value=25,
+            step=0.5,
+        ),
+    ]
+
+
+def build_fan_speed_numbers(
+    coordinator: VentAxiaMqttCoordinator,
+) -> list[VentAxiaMqttConfigNumber]:
+    """Writable per-mode extract/supply fan speeds (app 'Fan Mode Speeds')."""
+    numbers: list[VentAxiaMqttConfigNumber] = []
+    for mode in PRESET_FLOW_TOPICS:
+        for direction, label, icon in (
+            ("extract", "Extract", "mdi:fan-minus"),
+            ("supply", "Supply", "mdi:fan-plus"),
+        ):
+            numbers.append(
+                VentAxiaMqttConfigNumber(
+                    coordinator,
+                    f"fan_speed_{mode.lower()}_{direction}",
+                    f"Fan Speed {mode} {label}",
+                    (lambda m, d: lambda c: c.fan_speed(m, d))(mode, direction),
+                    (lambda m, d: lambda c, v: c.set_fan_speed(m, d, v))(
+                        mode, direction
+                    ),
+                    icon=icon,
+                    unit=PERCENTAGE,
+                    min_value=0,
+                    max_value=100,
+                    step=1,
+                )
+            )
+    return numbers
+
+
+class VentAxiaMqttDefaultAirflowSelect(SelectEntity):
+    """The unit's base airflow speed when idle on its schedule (vent/daf)."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Default Airflow"
+    _attr_icon = "mdi:fan-speed-1"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options = DEFAULT_AIRFLOW_OPTIONS
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_default_airflow"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return self._coordinator.available
+
+    @property
+    def current_option(self) -> str | None:
+        return self._coordinator.default_airflow
+
+    async def async_select_option(self, option: str) -> None:
+        self._coordinator.set_default_airflow(option)
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
+
+
+class VentAxiaMqttRemainingSensor(SensorEntity):
+    """Minutes left on the active override (blank when on schedule)."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Override Remaining"
+    _attr_icon = "mdi:timer-sand"
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_device_class = SensorDeviceClass.DURATION
+
+    def __init__(self, coordinator: VentAxiaMqttCoordinator) -> None:
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{coordinator.device_id}_override_remaining"
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return self._coordinator.available
+
+    @property
+    def native_value(self) -> int:
+        return self._coordinator.override_remaining_minutes or 0
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
+
+
+class VentAxiaMqttDerivedSensor(SensorEntity):
+    """A sensor whose value is computed from the coordinator (not a raw topic)."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: VentAxiaMqttCoordinator,
+        key: str,
+        name: str,
+        value_fn: Callable[[VentAxiaMqttCoordinator], Any],
+        *,
+        device_class: SensorDeviceClass | None = None,
+        unit: str | None = None,
+        icon: str | None = None,
+        attrs_fn: Callable[[VentAxiaMqttCoordinator], dict | None] | None = None,
+        entity_category: EntityCategory | None = None,
+    ) -> None:
+        self._coordinator = coordinator
+        self._value_fn = value_fn
+        self._attrs_fn = attrs_fn
+        self._attr_unique_id = f"{coordinator.device_id}_{key}"
+        self._attr_name = name
+        if device_class is not None:
+            self._attr_device_class = device_class
+        if unit is not None:
+            self._attr_native_unit_of_measurement = unit
+        if icon is not None:
+            self._attr_icon = icon
+        if entity_category is not None:
+            self._attr_entity_category = entity_category
+
+    @property
+    def device_info(self) -> DeviceInfo:  # type: ignore[override]
+        return self._coordinator.device_info
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return (
+            self._coordinator.available
+            and self._value_fn(self._coordinator) is not None
+        )
+
+    @property
+    def native_value(self) -> Any:
+        return self._value_fn(self._coordinator)
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        return self._attrs_fn(self._coordinator) if self._attrs_fn else None
+
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self._coordinator.add_update_callback(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._coordinator.remove_update_callback(self._handle_update)
+
+
+def _filter_attrs(c: VentAxiaMqttCoordinator) -> dict | None:
+    attrs: dict[str, Any] = {}
+    last = c.values.get("vent/filtertmr/last")
+    interval = c._int_val("vent/filtertmr/int")
+    t1 = c.values.get("vent/filter1/typ")
+    t2 = c.values.get("vent/filter2/typ")
+    if last:
+        attrs["last_changed"] = last
+    if interval is not None:
+        attrs["interval_months"] = interval
+    if t1:
+        attrs["supply_filter_type"] = t1
+    if t2:
+        attrs["extract_filter_type"] = t2
+    return attrs or None
+
+
+def _service_attrs(c: VentAxiaMqttCoordinator) -> dict | None:
+    attrs: dict[str, Any] = {}
+    last = c.values.get("mdet/svctmr/last")
+    interval = c._int_val("mdet/svctmr/int")
+    if last:
+        attrs["last_service"] = last
+    if interval is not None:
+        attrs["interval_months"] = interval
+    return attrs or None
+
+
+def _bypass_attrs(c: VentAxiaMqttCoordinator) -> dict | None:
+    sbs = c._json_val("vent/sbs") or {}
+    sbc = c._json_val("vent/sbc") or {}
+    attrs: dict[str, Any] = {}
+    if "pos" in sbs:
+        attrs["position"] = sbs["pos"]
+    if "am" in sbs:
+        attrs["auto_mode"] = sbs["am"]
+    if "mod" in sbc:
+        attrs["mode"] = sbc["mod"]
+    if "ect" in sbc:
+        attrs["comfort_extract_temp"] = sbc["ect"]
+    if "ict" in sbc:
+        attrs["comfort_indoor_temp"] = sbc["ict"]
+    return attrs or None
+
+
+def _current_mode_attrs(c: VentAxiaMqttCoordinator) -> dict | None:
+    active = c._override_active
+    attrs: dict[str, Any] = {}
+    if active is not None:
+        attrs["following"] = "override" if active else "schedule"
+    if active:
+        rem = c.override_remaining_minutes
+        if rem is not None:
+            attrs["override_remaining_min"] = rem
+    return attrs or None
+
+
+def build_optional_temp_sensors(
+    coordinator: VentAxiaMqttCoordinator, fitted: set[str]
+) -> list[SensorEntity]:
+    """Sensors for the extra probes in `fitted` (subset of io/t2, io/t4).
+
+    Heat recovery efficiency comes with the supply probe (io/t2).
+    """
+    entities: list[SensorEntity] = [
+        VentAxiaMqttSensor(coordinator, d)
+        for d in OPTIONAL_TEMP_SENSORS
+        if d.key in fitted
+    ]
+    if "io/t2" in fitted:
+        entities.append(
+            VentAxiaMqttDerivedSensor(
+                coordinator,
+                "heat_recovery_efficiency",
+                "Heat Recovery Efficiency",
+                lambda c: c.heat_recovery_efficiency,
+                unit=PERCENTAGE,
+                icon="mdi:heat-wave",
+            )
+        )
+        entities[-1]._attr_state_class = SensorStateClass.MEASUREMENT
+    return entities
+
+
+def build_maintenance_sensors(
+    coordinator: VentAxiaMqttCoordinator,
+) -> list[VentAxiaMqttDerivedSensor]:
+    """Filter-life, service-due and summer-bypass sensors for the newer model."""
+    return [
+        VentAxiaMqttDerivedSensor(
+            coordinator,
+            "current_mode",
+            "Current Mode",
+            lambda c: c.effective_mode,
+            icon="mdi:fan",
+            attrs_fn=_current_mode_attrs,
+        ),
+        VentAxiaMqttDerivedSensor(
+            coordinator,
+            "filter_due",
+            "Filter Due",
+            lambda c: c.filter_due,
+            device_class=SensorDeviceClass.TIMESTAMP,
+            icon="mdi:air-filter",
+            attrs_fn=_filter_attrs,
+        ),
+        VentAxiaMqttDerivedSensor(
+            coordinator,
+            "filter_remaining",
+            "Filter Life Remaining",
+            lambda c: c.filter_days_remaining,
+            device_class=SensorDeviceClass.DURATION,
+            unit=UnitOfTime.DAYS,
+            icon="mdi:air-filter",
+        ),
+        VentAxiaMqttDerivedSensor(
+            coordinator,
+            "service_due",
+            "Service Due",
+            lambda c: c.service_due,
+            device_class=SensorDeviceClass.TIMESTAMP,
+            icon="mdi:wrench-clock",
+            attrs_fn=_service_attrs,
+        ),
+        VentAxiaMqttDerivedSensor(
+            coordinator,
+            "service_remaining",
+            "Service Due In",
+            lambda c: c.service_days_remaining,
+            device_class=SensorDeviceClass.DURATION,
+            unit=UnitOfTime.DAYS,
+            icon="mdi:wrench-clock",
+        ),
+        VentAxiaMqttDerivedSensor(
+            coordinator,
+            "summer_bypass",
+            "Summer Bypass",
+            lambda c: c.bypass_state,
+            icon="mdi:valve",
+            attrs_fn=_bypass_attrs,
+        ),
+    ]

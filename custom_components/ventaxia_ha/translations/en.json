@@ -2,21 +2,45 @@
   "config": {
     "step": {
       "user": {
-        "title": "Vent Axia Integration for the Sentinel Kinetic Advance S MVHR",
-        "description": "Enter your device's connection info. The WiFi Key and SSID can be found on the device label.",
+        "title": "Vent-Axia Sentinel Kinetic Advance S MVHR",
+        "description": "Select your device model.",
+        "menu_options": {
+          "advance_s": "Advance S (Wi-Fi module with printed Key + SSID)",
+          "advance_s_2023": "Advance S (>2023) / SX / Econiq (no printed key)"
+        }
+      },
+      "advance_s": {
+        "title": "Advance S (Wi-Fi module)",
+        "description": "Enter your device's connection info. The Wi-Fi Key and SSID can be found on the device label.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "identity": "Identity (leave blank)",
+          "psk_key": "Device Wi-Fi Key (on label)",
+          "wifi_device_id": "Device SSID ID (on label)"
+        }
+      },
+      "advance_s_2023": {
+        "title": "Advance S (>2023) / SX / Econiq",
+        "description": "These controllers have no printed key. Setup guide: https://github.com/JosyBan/ventaxia_ha/blob/main/docs/newer_model_setup.md\n\nNote: {ble_status}\n\nThe identity is a fixed value used by the Vent-Axia Connect app (leave as 'zirconia'). The PSK is the key your unit exposes over Bluetooth in pairing mode (the 'tlsKey' characteristic); enter it as hex. The Device SSID is the unit's device ID. The data port is 8883.",
         "data": {
           "host": "Host",
           "port": "Port",
           "identity": "Identity",
-          "psk_key": "Device WiFi Key (on label)",
-          "wifi_device_id": "Device SSID ID (on label)"
+          "psk_key": "PSK",
+          "psk_is_hex": "PSK is entered as hex",
+          "wifi_device_id": "Device SSID ID"
         }
       }
     },
     "error": {
       "cannot_connect": "Cannot connect to the Vent-Axia device. Please check the host, port, and network connection.",
-      "auth": "The WiFi Key or identity is incorrect.",
+      "auth": "The PSK or identity is incorrect.",
+      "invalid_psk": "The PSK is not valid hex. Enter an even number of hex digits.",
       "unknown": "Unexpected error occurred. Please check the logs."
+    },
+    "abort": {
+      "already_configured": "This device is already configured."
     }
   }
 }
