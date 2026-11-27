@@ -49,8 +49,9 @@ class VentAxiaPskClient(AsyncNativePskClient):
     # live unit: an unpinned context resets; pinning to 1.2 succeeds.)
     pin_tls12: bool = False
 
-    def __init__(self, *args, psk_is_hex: bool = False, pin_tls12: bool = False,
-                 **kwargs) -> None:
+    def __init__(
+        self, *args, psk_is_hex: bool = False, pin_tls12: bool = False, **kwargs
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.pin_tls12 = pin_tls12
         if psk_is_hex:

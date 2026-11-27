@@ -42,6 +42,7 @@ STEP_ADVANCE_S_SCHEMA = vol.Schema(
     }
 )
 
+
 # Newer (>2023) / SX / Econiq controllers: no printed key. Identity is a fixed
 # app constant and the PSK is extracted (as hex) from the pairing exchange.
 # The device ID and PSK can be auto-filled over Bluetooth (see ble.py), so the
@@ -247,9 +248,7 @@ class VentAxiaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(title=info["title"], data=data)
 
-        return self.async_show_form(
-            step_id=model, data_schema=schema, errors=errors
-        )
+        return self.async_show_form(step_id=model, data_schema=schema, errors=errors)
 
 
 class CannotConnect(HomeAssistantError):

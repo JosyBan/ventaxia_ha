@@ -19,11 +19,7 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.device_registry import DeviceInfo
-from ventaxiaiot import (
-    PendingRequestTracker,
-    VentClientCommands,
-    VentMessageProcessor,
-)
+from ventaxiaiot import PendingRequestTracker, VentClientCommands, VentMessageProcessor
 
 from .client import VentAxiaPskClient
 from .const import (
@@ -35,9 +31,9 @@ from .const import (
     CONF_PSK_IS_HEX,
     CONF_PSK_KEY,
     CONF_WIFI_DEVICE_ID,
-    MODEL_ADVANCE_S_2023,
     DOMAIN,
     INTEGRATION_VERSION,
+    MODEL_ADVANCE_S_2023,
     SERVICE_SET_AIRFLOW_MODE,
     SERVICE_SET_SCHEDULE,
     SERVICE_SET_SUMMER_BYPASS,

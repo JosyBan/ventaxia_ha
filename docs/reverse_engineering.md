@@ -6,8 +6,8 @@ Assistant integration could talk to it directly over the local network.
 
 Everything here was done against a privately-owned unit for interoperability.
 The hard protocol facts (topic map, TLS parameters, override control) live in
-[`newer_model_notes.md`](newer_model_notes.md); this document is the *story of
-how* those were found.
+[`newer_model_notes.md`](newer_model_notes.md); this document is the _story of
+how_ those were found.
 
 ## The problem
 
@@ -19,7 +19,7 @@ the `ventaxiaiot` library. The newer **Econiq** controller is different:
 - it did **not** respond to the old raw-JSON framing — so the application
   protocol was unknown too.
 
-Two unknowns to solve: *how to authenticate* and *what the unit actually speaks*.
+Two unknowns to solve: _how to authenticate_ and _what the unit actually speaks_.
 
 ## Stage 1 — Decompile the app (learn the vocabulary)
 
@@ -61,7 +61,7 @@ BLE during pairing**.
 With key + identity + cipher in hand, the first TLS-PSK connections still **reset
 immediately**.
 
-1. Proved the *credentials* were correct first with **`openssl s_client`**:
+1. Proved the _credentials_ were correct first with **`openssl s_client`**:
    ```sh
    openssl s_client -connect <ip>:8883 \
      -psk <hex-key> -psk_identity zirconia \
@@ -82,7 +82,7 @@ library doesn't, suspect the **protocol-version** offer before the credentials.
 
 ## Stage 4 — Find the real application protocol
 
-The biggest dead end: assuming the newer unit used the *older* model's raw-JSON
+The biggest dead end: assuming the newer unit used the _older_ model's raw-JSON
 `<deviceId>/rd` framing on **47820**. A connect attempt got **no response at all**.
 
 Back in the decompiled bundle, `mqttPort: 8883` was the clue. The newer model
@@ -124,15 +124,15 @@ With a live MQTT feed, the rest was observation plus active probing:
 4. **Find the real protocol** by trusting the app's own constants (MQTT on 8883),
    not the previous model's assumptions.
 5. **Confirm by live capture and active probing** of your own unit — the app says
-   *what* to send; the unit says *whether it worked*.
+   _what_ to send; the unit says _whether it worked_.
 
 ## Tools used
 
-| Tool | Purpose |
-|------|---------|
-| `hbc-decompiler` (hermes-dec) | decompile the Hermes/RN app bundle |
-| `grep` | mine the decompiled bundle for constants |
-| `bleak` | read the PSK / device ID off the BLE Auth service |
-| `openssl s_client` | prove the TLS-PSK credentials/cipher independently |
-| Python `ssl` | pin TLS 1.2 for the real client |
-| `paho-mqtt` | speak MQTT 3.1.1 over the TLS-PSK socket |
+| Tool                          | Purpose                                            |
+| ----------------------------- | -------------------------------------------------- |
+| `hbc-decompiler` (hermes-dec) | decompile the Hermes/RN app bundle                 |
+| `grep`                        | mine the decompiled bundle for constants           |
+| `bleak`                       | read the PSK / device ID off the BLE Auth service  |
+| `openssl s_client`            | prove the TLS-PSK credentials/cipher independently |
+| Python `ssl`                  | pin TLS 1.2 for the real client                    |
+| `paho-mqtt`                   | speak MQTT 3.1.1 over the TLS-PSK socket           |

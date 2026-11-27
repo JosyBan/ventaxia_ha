@@ -6,8 +6,7 @@ the ones with no printed Wi‑Fi key, that pair over Bluetooth and advertise as
 option and the main [README](../README.md).
 
 > **TL;DR** — Add the integration, choose **Advance S (>2023) / SX / Econiq**,
-> and enter five things: **Host** (the unit's IP), **Port** `8883`, **Identity**
-> `zirconia`, the **PSK** (as hex), and the **Device ID**. If Home Assistant has
+> and enter five things: **Host** (the unit's IP), **Port** `8883`, **Identity** > `zirconia`, the **PSK** (as hex), and the **Device ID**. If Home Assistant has
 > a working Bluetooth adapter in range, the Device ID and PSK are filled in for
 > you — see [Bluetooth auto-detect](#bluetooth-auto-detect).
 
@@ -15,18 +14,19 @@ option and the main [README](../README.md).
 
 ## 1. What you need
 
-| Field | What it is | Example |
-|-------|-----------|---------|
-| **Host** | The controller's IP address on your network | `10.10.5.42` |
-| **Port** | Always `8883` for these units | `8883` |
-| **Identity** | A fixed value baked into the Vent‑Axia app — leave as‑is | `zirconia` |
-| **PSK** | The per‑unit pre‑shared key, entered as **hex** (tick *PSK is hex*) | `1a2b3c…` |
-| **Device ID** | The unit's device identifier | `NNNNN-XXXXX` |
+| Field         | What it is                                                          | Example        |
+| ------------- | ------------------------------------------------------------------- | -------------- |
+| **Host**      | The controller's IP address on your network                         | `192.168.1.50` |
+| **Port**      | Always `8883` for these units                                       | `8883`         |
+| **Identity**  | A fixed value baked into the Vent‑Axia app — leave as‑is            | `zirconia`     |
+| **PSK**       | The per‑unit pre‑shared key, entered as **hex** (tick _PSK is hex_) | `1a2b3c…`      |
+| **Device ID** | The unit's device identifier                                        | `NNNNN-XXXXX`  |
 
 Find the **Host** from your router's DHCP list (look for the Vent‑Axia / ESP
 device), or set a DHCP reservation so it never changes.
 
 > **Put the unit on your home Wi‑Fi first.**
+>
 > - It only joins **2.4 GHz** Wi‑Fi. 5 GHz does not work.
 > - Connect it to your normal home network in the Vent‑Axia Connect app.
 > - Do not leave it on its own setup Wi‑Fi (access point mode).
@@ -50,11 +50,11 @@ When you open the setup form, the integration automatically scans over Home
 Assistant's Bluetooth stack for the controller and tries to fill in the Device
 ID and PSK. A grey note at the top of the form tells you what it found:
 
-| What the note says | What to do |
-|--------------------|-----------|
-| *Auto-detected over Bluetooth — device ID and PSK filled in* | Just add the **Host** and submit. |
-| *Auto-detected device ID …, but the PSK is locked* | The unit is already paired, so the PSK reads back blank. Put the unit in **pairing mode** and reopen the form, **or** enter the PSK by hand. |
-| *Bluetooth auto-detect found no unit in range…* | No usable Bluetooth adapter is in range — enter the Device ID and PSK by hand. |
+| What the note says                                           | What to do                                                                                                                                   |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| _Auto-detected over Bluetooth — device ID and PSK filled in_ | Just add the **Host** and submit.                                                                                                            |
+| _Auto-detected device ID …, but the PSK is locked_           | The unit is already paired, so the PSK reads back blank. Put the unit in **pairing mode** and reopen the form, **or** enter the PSK by hand. |
+| _Bluetooth auto-detect found no unit in range…_              | No usable Bluetooth adapter is in range — enter the Device ID and PSK by hand.                                                               |
 
 **Requirements for auto-detect:**
 
@@ -88,11 +88,11 @@ BLE shows several similar values and it is easy to grab the wrong one. Only
 [@bekraupov](https://github.com/bekraupov) for confirming on the Econiq). The
 example values below are made‑up, in the real format:
 
-| Characteristic UUID | Length | Example (nRF "hex") | What it is |
-|---|---|---|---|
-| `638ff62c-3823-4e0f-8179-1695c46ee8ad` | 8 bytes | `4F-1A-9C-72-D3-08-6B-E5` | **PSK — use this** |
+| Characteristic UUID                    | Length   | Example (nRF "hex")           | What it is                                                |
+| -------------------------------------- | -------- | ----------------------------- | --------------------------------------------------------- |
+| `638ff62c-3823-4e0f-8179-1695c46ee8ad` | 8 bytes  | `4F-1A-9C-72-D3-08-6B-E5`     | **PSK — use this**                                        |
 | `98faf8a5-1ee6-4b0c-911e-dc37bff5206f` | 16 bytes | `7D-20-B4-…` (random‑looking) | **Not** the PSK — looks like one, but the handshake fails |
-| `673de933-963b-4298-bfc1-b0ccdada690a` | 11 chars | `ABCDE-FGHIJ` | Device ID / serial |
+| `673de933-963b-4298-bfc1-b0ccdada690a` | 11 chars | `ABCDE-FGHIJ`                 | Device ID / serial                                        |
 
 - The PSK is **8 bytes (16 hex characters)**, not 16 bytes.
 - Enter it with the dashes removed, e.g. `4F1A9C72D3086BE5`, and tick **PSK is hex**.
@@ -118,7 +118,7 @@ More detail is in [`newer_model_notes.md`](newer_model_notes.md).
 2. **Settings → Devices & Services → + Add Integration → "Vent‑Axia".**
 3. Choose **Advance S (>2023) / SX / Econiq**.
 4. Read the grey note (auto-detect result) and fill in anything not already
-   filled: Host, Port `8883`, Identity `zirconia`, PSK (+ tick *PSK is hex*),
+   filled: Host, Port `8883`, Identity `zirconia`, PSK (+ tick _PSK is hex_),
    Device ID.
 5. **Submit.** The integration does a live TLS‑PSK handshake to validate before
    it finishes — if it errors, re-check the PSK and that the Host is reachable.
@@ -129,27 +129,27 @@ More detail is in [`newer_model_notes.md`](newer_model_notes.md).
 
 ### Sensors
 
-| Sensor | Notes |
-|--------|-------|
-| Outdoor / Extract Air Temperature | °C |
-| Extract / Intake Humidity | % |
-| Supply / Extract Fan Speed | rpm |
-| Supply / Extract Fan Power | W |
-| Power | total W |
-| Wi‑Fi Signal | dBm (diagnostic, disabled by default) |
+| Sensor                                     | Notes                                                                                      |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| Outdoor / Extract Air Temperature          | °C                                                                                         |
+| Extract / Intake Humidity                  | %                                                                                          |
+| Supply / Extract Fan Speed                 | rpm                                                                                        |
+| Supply / Extract Fan Power                 | W                                                                                          |
+| Power                                      | total W                                                                                    |
+| Wi‑Fi Signal                               | dBm (diagnostic, disabled by default)                                                      |
 | **Filter Due** / **Filter Life Remaining** | next filter change date / days left; attributes show last change, interval and filter type |
-| **Service Due** / **Service Due In** | next service date / days left |
-| **Summer Bypass** | `Open` / `Closed`; attributes show position, mode and comfort temps |
-| Override Remaining | minutes left on an active override |
+| **Service Due** / **Service Due In**       | next service date / days left                                                              |
+| **Summer Bypass**                          | `Open` / `Closed`; attributes show position, mode and comfort temps                        |
+| Override Remaining                         | minutes left on an active override                                                         |
 
 ### Controls
 
-| Control | What it does |
-|---------|--------------|
-| **Ventilation Mode** (select) | Auto / Low / Normal / Boost / Purge / Max. "Auto" follows the unit's own schedule; the others apply a timed override. |
-| **Override Duration** (number) | How long a selected mode runs before reverting to the schedule (minutes). |
-| **Boost 15 min** (button) | One‑press 15‑minute boost. |
-| **Boost Hold** (switch) | Boost **until turned off** — see below. |
+| Control                        | What it does                                                                                                          |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| **Ventilation Mode** (select)  | Auto / Low / Normal / Boost / Purge / Max. "Auto" follows the unit's own schedule; the others apply a timed override. |
+| **Override Duration** (number) | How long a selected mode runs before reverting to the schedule (minutes).                                             |
+| **Boost 15 min** (button)      | One‑press 15‑minute boost.                                                                                            |
+| **Boost Hold** (switch)        | Boost **until turned off** — see below.                                                                               |
 
 ---
 
@@ -206,13 +206,13 @@ notification triggers, e.g. notify when the filter is within two weeks:
 
 ## 6. Troubleshooting
 
-| Symptom | Fix |
-|---------|-----|
-| **Setup fails to connect** | Check the Host is reachable and the PSK is correct (and that *PSK is hex* is ticked if you entered hex). Port must be `8883`. |
-| **Some sensors are briefly "unavailable" after a restart** | They populate within a minute as the integration polls the controller. If one stays unavailable, reload the integration. |
-| **Bluetooth auto-detect finds nothing** | HA needs a Bluetooth adapter/proxy in range. A Pi's onboard radio is often too weak — use an ESP32 `bluetooth_proxy`. Manual entry always works. |
-| **PSK reads back blank/locked over Bluetooth** | The unit is already paired. Put it in pairing mode to read the PSK, or enter it by hand. |
-| **Override Remaining or mode looks stale** | Values refresh every ~45 s; mode changes made on the wall controller reflect within that window. |
+| Symptom                                                    | Fix                                                                                                                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Setup fails to connect**                                 | Check the Host is reachable and the PSK is correct (and that _PSK is hex_ is ticked if you entered hex). Port must be `8883`.                    |
+| **Some sensors are briefly "unavailable" after a restart** | They populate within a minute as the integration polls the controller. If one stays unavailable, reload the integration.                         |
+| **Bluetooth auto-detect finds nothing**                    | HA needs a Bluetooth adapter/proxy in range. A Pi's onboard radio is often too weak — use an ESP32 `bluetooth_proxy`. Manual entry always works. |
+| **PSK reads back blank/locked over Bluetooth**             | The unit is already paired. Put it in pairing mode to read the PSK, or enter it by hand.                                                         |
+| **Override Remaining or mode looks stale**                 | Values refresh every ~45 s; mode changes made on the wall controller reflect within that window.                                                 |
 
 More protocol detail and the reverse‑engineering write‑up are in
 [`newer_model_notes.md`](newer_model_notes.md) and

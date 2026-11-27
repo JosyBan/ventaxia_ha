@@ -85,6 +85,7 @@ def _load_paho():
         mqtt = _paho
     return mqtt
 
+
 # Below this indoor/outdoor temperature difference (C) the efficiency ratio is
 # too noisy to report.
 EFFICIENCY_MIN_SPREAD = 3.0
@@ -218,6 +219,8 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
 # Default override duration (minutes) when a mode is selected; adjustable via the
 # Override Duration number entity. The unit reverts to its schedule afterwards.
 DEFAULT_OVERRIDE_MINUTES = 15
@@ -324,11 +327,11 @@ POLL_TOPICS_SLOW: tuple[str, ...] = (
     "vent/pf4",
     "io/erh/conf",
 )
-POLL_BATCH = 4          # topics subscribed at once (keep well under the table size)
-POLL_SERVE_WAIT = 1.2   # seconds to let the broker serve a batch before unsubscribe
-POLL_BATCH_GAP = 0.3    # pause between batches
-POLL_INTERVAL = 45      # seconds between fast refresh cycles
-SLOW_POLL_EVERY = 7     # include the slow topics every Nth cycle (~5 min)
+POLL_BATCH = 4  # topics subscribed at once (keep well under the table size)
+POLL_SERVE_WAIT = 1.2  # seconds to let the broker serve a batch before unsubscribe
+POLL_BATCH_GAP = 0.3  # pause between batches
+POLL_INTERVAL = 45  # seconds between fast refresh cycles
+SLOW_POLL_EVERY = 7  # include the slow topics every Nth cycle (~5 min)
 
 # The controller's broker occasionally drops the TLS socket; paho reconnects
 # within a second or two. Don't flap every entity to "unavailable" for those
@@ -407,9 +410,7 @@ class VentAxiaMqttCoordinator:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         identity = self.data[CONF_IDENTITY]
-        psk = decode_psk(
-            self.data[CONF_PSK_KEY], self.data.get(CONF_PSK_IS_HEX, False)
-        )
+        psk = decode_psk(self.data[CONF_PSK_KEY], self.data.get(CONF_PSK_IS_HEX, False))
         ctx.set_psk_client_callback(lambda hint: (identity, psk))
         return ctx
 
@@ -564,7 +565,10 @@ class VentAxiaMqttCoordinator:
     # ---- paho callbacks (run in paho's network thread) -------------------
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         rc = getattr(reason_code, "value", reason_code)
-        if rc not in (0, mqtt.CONNACK_ACCEPTED if hasattr(mqtt, "CONNACK_ACCEPTED") else 0):
+        if rc not in (
+            0,
+            mqtt.CONNACK_ACCEPTED if hasattr(mqtt, "CONNACK_ACCEPTED") else 0,
+        ):
             _LOGGER.warning("VentAxia MQTT connect failed: rc=%s", reason_code)
             return
         self._connected = True
@@ -606,9 +610,11 @@ class VentAxiaMqttCoordinator:
         return True
 
     def _on_message(self, client, userdata, msg):
-        suffix = msg.topic[len(self.device_id) + 1:] if msg.topic.startswith(
-            self.device_id + "/"
-        ) else msg.topic
+        suffix = (
+            msg.topic[len(self.device_id) + 1 :]
+            if msg.topic.startswith(self.device_id + "/")
+            else msg.topic
+        )
         payload = msg.payload.decode("utf-8", "replace")
         # Liveness: refresh even on an identical re-publish (proves availability).
         self._last_seen = time.monotonic()
@@ -649,7 +655,8 @@ class VentAxiaMqttCoordinator:
             # otherwise only logs commands it *sends*, never what the unit does.
             _LOGGER.debug(
                 "VentAxia caf preset %s -> %s (extract RH=%s, cor=%s, caf=%s)",
-                self._caf_ps_stable, ps,
+                self._caf_ps_stable,
+                ps,
                 self.values.get("io/erh/val"),
                 self.values.get("vent/cor"),
                 self.values.get("vent/caf"),
@@ -861,12 +868,12 @@ class VentAxiaMqttCoordinator:
         if self._commanded_gtm is None:
             return None
         target = (
-            "Auto" if self._commanded_gtm == 0
-            else GTM_TO_MODE.get(self._commanded_gtm)
+            "Auto" if self._commanded_gtm == 0 else GTM_TO_MODE.get(self._commanded_gtm)
         )
-        if self._live_mode() == target or (
-            time.monotonic() - self._commanded_at
-        ) > OPTIMISTIC_SECONDS:
+        if (
+            self._live_mode() == target
+            or (time.monotonic() - self._commanded_at) > OPTIMISTIC_SECONDS
+        ):
             self._commanded_gtm = None  # reconciled (or timed out)
             return None
         return target
@@ -1275,7 +1282,8 @@ class VentAxiaMqttModeSelect(SelectEntity):
         if gtm is None:
             return
         treq = (
-            "00:00:00" if gtm == 0
+            "00:00:00"
+            if gtm == 0
             else minutes_to_treq(self._coordinator.override_minutes)
         )
         self._coordinator.set_override(gtm, treq)
@@ -1510,20 +1518,28 @@ def build_config_numbers(
     """Writable summer-bypass comfort setpoints for the newer model."""
     return [
         VentAxiaMqttConfigNumber(
-            coordinator, "bypass_comfort_indoor", "Bypass Indoor Comfort Temp",
+            coordinator,
+            "bypass_comfort_indoor",
+            "Bypass Indoor Comfort Temp",
             lambda c: c.bypass_comfort_indoor,
             lambda c, v: c.set_bypass_comfort_indoor(v),
             icon="mdi:home-thermometer",
             unit=UnitOfTemperature.CELSIUS,
-            min_value=15, max_value=30, step=0.5,
+            min_value=15,
+            max_value=30,
+            step=0.5,
         ),
         VentAxiaMqttConfigNumber(
-            coordinator, "bypass_comfort_external", "Bypass Outdoor Comfort Temp",
+            coordinator,
+            "bypass_comfort_external",
+            "Bypass Outdoor Comfort Temp",
             lambda c: c.bypass_comfort_external,
             lambda c, v: c.set_bypass_comfort_external(v),
             icon="mdi:sun-thermometer",
             unit=UnitOfTemperature.CELSIUS,
-            min_value=5, max_value=25, step=0.5,
+            min_value=5,
+            max_value=25,
+            step=0.5,
         ),
     ]
 
@@ -1668,7 +1684,10 @@ class VentAxiaMqttDerivedSensor(SensorEntity):
 
     @property
     def available(self) -> bool:  # type: ignore[override]
-        return self._coordinator.available and self._value_fn(self._coordinator) is not None
+        return (
+            self._coordinator.available
+            and self._value_fn(self._coordinator) is not None
+        )
 
     @property
     def native_value(self) -> Any:
@@ -1760,9 +1779,12 @@ def build_optional_temp_sensors(
     if "io/t2" in fitted:
         entities.append(
             VentAxiaMqttDerivedSensor(
-                coordinator, "heat_recovery_efficiency", "Heat Recovery Efficiency",
+                coordinator,
+                "heat_recovery_efficiency",
+                "Heat Recovery Efficiency",
                 lambda c: c.heat_recovery_efficiency,
-                unit=PERCENTAGE, icon="mdi:heat-wave",
+                unit=PERCENTAGE,
+                icon="mdi:heat-wave",
             )
         )
         entities[-1]._attr_state_class = SensorStateClass.MEASUREMENT
@@ -1775,38 +1797,55 @@ def build_maintenance_sensors(
     """Filter-life, service-due and summer-bypass sensors for the newer model."""
     return [
         VentAxiaMqttDerivedSensor(
-            coordinator, "current_mode", "Current Mode",
+            coordinator,
+            "current_mode",
+            "Current Mode",
             lambda c: c.effective_mode,
             icon="mdi:fan",
             attrs_fn=_current_mode_attrs,
         ),
         VentAxiaMqttDerivedSensor(
-            coordinator, "filter_due", "Filter Due",
+            coordinator,
+            "filter_due",
+            "Filter Due",
             lambda c: c.filter_due,
             device_class=SensorDeviceClass.TIMESTAMP,
-            icon="mdi:air-filter", attrs_fn=_filter_attrs,
+            icon="mdi:air-filter",
+            attrs_fn=_filter_attrs,
         ),
         VentAxiaMqttDerivedSensor(
-            coordinator, "filter_remaining", "Filter Life Remaining",
+            coordinator,
+            "filter_remaining",
+            "Filter Life Remaining",
             lambda c: c.filter_days_remaining,
             device_class=SensorDeviceClass.DURATION,
-            unit=UnitOfTime.DAYS, icon="mdi:air-filter",
+            unit=UnitOfTime.DAYS,
+            icon="mdi:air-filter",
         ),
         VentAxiaMqttDerivedSensor(
-            coordinator, "service_due", "Service Due",
+            coordinator,
+            "service_due",
+            "Service Due",
             lambda c: c.service_due,
             device_class=SensorDeviceClass.TIMESTAMP,
-            icon="mdi:wrench-clock", attrs_fn=_service_attrs,
+            icon="mdi:wrench-clock",
+            attrs_fn=_service_attrs,
         ),
         VentAxiaMqttDerivedSensor(
-            coordinator, "service_remaining", "Service Due In",
+            coordinator,
+            "service_remaining",
+            "Service Due In",
             lambda c: c.service_days_remaining,
             device_class=SensorDeviceClass.DURATION,
-            unit=UnitOfTime.DAYS, icon="mdi:wrench-clock",
+            unit=UnitOfTime.DAYS,
+            icon="mdi:wrench-clock",
         ),
         VentAxiaMqttDerivedSensor(
-            coordinator, "summer_bypass", "Summer Bypass",
+            coordinator,
+            "summer_bypass",
+            "Summer Bypass",
             lambda c: c.bypass_state,
-            icon="mdi:valve", attrs_fn=_bypass_attrs,
+            icon="mdi:valve",
+            attrs_fn=_bypass_attrs,
         ),
     ]

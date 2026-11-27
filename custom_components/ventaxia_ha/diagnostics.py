@@ -6,6 +6,7 @@ state. This is aimed at debugging unexpected unit behaviour (e.g. periodic
 boosting): the raw ``vent/caf``, ``vent/cor`` and ``io/erh/*`` values together
 show whether a boost is humidity-driven, an override, or something else.
 """
+
 from __future__ import annotations
 
 import time
@@ -15,12 +16,7 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import (
-    CONF_HOST,
-    CONF_PSK_KEY,
-    CONF_WIFI_DEVICE_ID,
-    DOMAIN,
-)
+from .const import CONF_HOST, CONF_PSK_KEY, CONF_WIFI_DEVICE_ID, DOMAIN
 
 # Secrets / identifying values kept out of the dump.
 TO_REDACT_ENTRY = {CONF_PSK_KEY, CONF_WIFI_DEVICE_ID, CONF_HOST}
@@ -43,9 +39,7 @@ def _coordinator_state(coordinator: Any) -> dict[str, Any]:
     last_seen = getattr(coordinator, "_last_seen", None)
     if last_seen is not None:
         try:
-            state["seconds_since_last_message"] = round(
-                time.monotonic() - last_seen, 1
-            )
+            state["seconds_since_last_message"] = round(time.monotonic() - last_seen, 1)
         except TypeError:
             pass
 

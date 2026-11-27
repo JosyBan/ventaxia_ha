@@ -95,13 +95,13 @@ override/mode control, TLS parameters) are in
 
 You need five values:
 
-| Field | Value |
-| ----- | ----- |
-| Host | the unit's IP address on your network |
-| Port | `8883` |
-| Identity | `zirconia` (a fixed app constant — leave as-is) |
-| PSK | the per-unit key, entered as **hex** (tick *PSK is hex*) |
-| Device SSID ID | the unit's device ID, e.g. `NNNNN-XXXXX` |
+| Field          | Value                                                    |
+| -------------- | -------------------------------------------------------- |
+| Host           | the unit's IP address on your network                    |
+| Port           | `8883`                                                   |
+| Identity       | `zirconia` (a fixed app constant — leave as-is)          |
+| PSK            | the per-unit key, entered as **hex** (tick _PSK is hex_) |
+| Device SSID ID | the unit's device ID, e.g. `NNNNN-XXXXX`                 |
 
 ### Where the PSK comes from
 
